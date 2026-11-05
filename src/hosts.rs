@@ -23,9 +23,25 @@ pub fn wanted(cfg: &Config) -> Vec<String> {
     set.into_iter().collect()
 }
 
+/// Nama yang sudah dipetakan ke `ip`. Baris di dalam blok milik Herd
+/// (`# Herd generated Hosts` … `# End Herd generated Hosts`) diabaikan,
+/// karena blok itu ikut dihapus saat Herd di-uninstall.
 fn mapped(text: &str, ip: &str) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
+    let mut in_herd = false;
     for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with("# Herd generated Hosts") {
+            in_herd = true;
+            continue;
+        }
+        if t.starts_with("# End Herd generated Hosts") {
+            in_herd = false;
+            continue;
+        }
+        if in_herd {
+            continue;
+        }
         let line = line.split('#').next().unwrap_or("");
         let mut it = line.split_whitespace();
         if it.next() == Some(ip) {
@@ -112,5 +128,13 @@ mod tests {
         assert!(!out.contains("old.test"));
         assert!(out.contains("127.0.0.1 herdlite.test"));
         assert_eq!(out.matches("herdlite-start").count(), 1);
+    }
+
+    #[test]
+    fn herd_block_not_counted() {
+        let t = "127.0.0.1 a.test\n# Herd generated Hosts. Do not change.\n127.0.0.1 b.test\n# End Herd generated Hosts\n";
+        let m = mapped(t, "127.0.0.1");
+        assert!(m.contains("a.test"));
+        assert!(!m.contains("b.test"));
     }
 }
