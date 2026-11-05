@@ -3,6 +3,7 @@
 //! - `hl.exe`        : CLI (park, link, isolate, use, start/stop, dst.)
 //! - `herdlited.exe` : server latar belakang (HTTP + HTTPS + FastCGI ke php-cgi)
 
+pub mod config;
 pub mod util;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
