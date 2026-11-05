@@ -181,6 +181,36 @@ pub fn install_composer(home: &Path) -> Result<PathBuf, String> {
     Ok(p)
 }
 
+/// Lokasi laravel.bat dari `composer global require laravel/installer`, kalau ada.
+pub fn laravel_bat() -> Option<PathBuf> {
+    let base = std::env::var("COMPOSER_HOME")
+        .map(PathBuf::from)
+        .or_else(|_| std::env::var("APPDATA").map(|a| PathBuf::from(a).join("Composer")))
+        .ok()?;
+    let p = base.join("vendor").join("bin").join("laravel.bat");
+    p.is_file().then_some(p)
+}
+
+/// Pasang Laravel installer lewat composer global, lalu buat shim laravel.cmd.
+pub fn install_laravel(home: &Path, cfg: &Config) -> Result<PathBuf, String> {
+    let g = cfg.global_php(home).ok_or("pasang PHP dulu: hl php:install 8.3")?;
+    let php = cfg.php_dir(home, &g).join("php.exe");
+    let phar = home.join("bin").join("composer.phar");
+    if !phar.is_file() {
+        install_composer(home)?;
+    }
+    let st = Command::new(&php)
+        .arg(&phar)
+        .args(["global", "require", "laravel/installer", "--no-interaction"])
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !st.success() {
+        return Err("composer global require laravel/installer gagal".into());
+    }
+    write_shims(home, cfg)?;
+    laravel_bat().ok_or_else(|| "laravel.bat tidak ditemukan setelah instalasi".into())
+}
+
 /// Tulis shim di <home>\bin: php.cmd (versi global), phpXY.cmd, composer.cmd.
 pub fn write_shims(home: &Path, cfg: &Config) -> Result<(), String> {
     let bin = home.join("bin");
@@ -192,6 +222,9 @@ pub fn write_shims(home: &Path, cfg: &Config) -> Result<(), String> {
             fs::write(bin.join("composer.cmd"), format!("@\"{}\" \"%~dp0composer.phar\" %*\r\n", exe.display()))
                 .map_err(|e| e.to_string())?;
         }
+    }
+    if let Some(l) = laravel_bat() {
+        fs::write(bin.join("laravel.cmd"), format!("@\"{}\" %*\r\n", l.display())).map_err(|e| e.to_string())?;
     }
     for v in cfg.installed_php(home) {
         let exe = cfg.php_dir(home, &v).join("php.exe");
