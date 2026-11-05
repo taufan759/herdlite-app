@@ -29,7 +29,7 @@ ring = "0.17"
 time = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_System_Console"] }
 
 [profile.release]
 opt-level = "s"

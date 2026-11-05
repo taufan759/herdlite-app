@@ -528,6 +528,7 @@ fn start(home: &Path, cfg: &Config) -> Result<(), String> {
     }
     let exe = daemon_exe()?;
     let _ = std::fs::remove_file(server::pid_path(home));
+    win::no_inherit_std_handles();
     let flags =win::DETACHED_PROCESS | win::CREATE_NEW_PROCESS_GROUP | win::CREATE_NO_WINDOW;
     let spawn = |extra: u32| {
         Command::new(&exe)

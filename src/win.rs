@@ -67,6 +67,22 @@ pub fn kill_children_on_exit() {
     }
 }
 
+/// Jadikan stdin/stdout/stderr proses ini tidak diwariskan ke proses anak.
+/// Tanpa ini, server latar belakang ikut memegang pipe output terminal
+/// (mis. `hl start | more`) sehingga pembaca pipe menunggu selamanya.
+pub fn no_inherit_std_handles() {
+    use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
+    unsafe {
+        for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            let h = GetStdHandle(id);
+            if !h.is_null() && h != INVALID_HANDLE_VALUE {
+                SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+    }
+}
+
 /// Cari nama proses yang sedang LISTEN di port TCP tertentu (untuk pesan error).
 pub fn port_owner(port: u16) -> Option<String> {
     let out = Command::new("netstat")
