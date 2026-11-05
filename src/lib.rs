@@ -6,6 +6,7 @@
 pub mod config;
 pub mod fastcgi;
 pub mod pool;
+pub mod server;
 pub mod tls;
 pub mod util;
 pub mod win;
