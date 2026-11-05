@@ -2,7 +2,7 @@
 
 use herdlite::config::{self, norm, parse_ver, Config, Kind};
 use herdlite::util::clean_abs;
-use herdlite::{herdimport, hosts, phpinstall, server, tls, util, win};
+use herdlite::{herdimport, hosts, node, phpinstall, server, tls, util, win};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::os::windows::process::CommandExt;
@@ -39,6 +39,12 @@ PHP:
   hl php:install <versi> [--force]   unduh & pasang PHP resmi (NTS x64)
   hl php:add <versi> <folder>   daftarkan PHP yang sudah ada di folder lain
   hl composer:install           unduh composer.phar + shim composer.cmd
+  hl laravel:install            pasang Laravel installer (perintah `laravel new`)
+
+Node.js (pengganti nvm bawaan Herd):
+  hl node:install <versi|lts>   unduh Node resmi dari nodejs.org, mis. hl node:install 26
+  hl node:use <versi>           ganti versi Node aktif
+  hl node:list                  versi Node terpasang
 
 HTTPS:
   hl secure [nama] | hl secure --all     paksa https untuk situs / semua situs
@@ -51,7 +57,7 @@ Lain-lain:
   hl hosts sync                 tulis blok herdlite ke hosts (jalankan dari terminal Administrator)
   hl import-herd [--use-herd-php]    salin pengaturan park/link/isolate dari Herd (Herd tidak diubah)
   hl config [kunci [nilai]]     lihat / ubah config.json (mis. hl config http_port 8080)
-  hl path:add                   tambahkan <home>\bin ke PATH user
+  hl path:add                   tambahkan <home>\bin dan Node aktif ke PATH user
   hl autostart on|off           jalankan herdlite otomatis saat login
   hl home                       tampilkan folder data herdlite
 "#;
@@ -306,6 +312,34 @@ fn run(args: Vec<String>) -> Result<i32, String> {
             phpinstall::write_shims(&home, &cfg)?;
             println!("✓ composer.phar di {}", p.display());
         }
+        "laravel:install" => {
+            let p = phpinstall::install_laravel(&home, &cfg)?;
+            println!("✓ Laravel installer terpasang ({}), shim laravel.cmd di {}\\bin", p.display(), home.display());
+        }
+        "node:install" => {
+            let spec = pos.first().ok_or("contoh: hl node:install 26  atau  hl node:install lts")?;
+            let v = node::install(&home, spec)?;
+            if node::active(&home).is_none() {
+                node::use_version(&home, &v)?;
+                println!("✓ Node {v} terpasang dan aktif ({})", node::current_link(&home).display());
+            } else {
+                println!("✓ Node {v} terpasang. Aktifkan: hl node:use {v}");
+            }
+        }
+        "node:use" => {
+            let v = node::use_version(&home, pos.first().ok_or("contoh: hl node:use 26")?)?;
+            println!("✓ Node aktif sekarang {v}");
+        }
+        "node:list" => {
+            let act = node::active(&home);
+            let list = node::installed(&home);
+            if list.is_empty() {
+                println!("(belum ada — jalankan: hl node:install lts)");
+            }
+            for v in list {
+                println!("{} {v}", if Some(&v) == act.as_ref() { "*" } else { " " });
+            }
+        }
 
         "secure" | "unsecure" => {
             let on = cmd == "secure";
@@ -404,14 +438,23 @@ fn run(args: Vec<String>) -> Result<i32, String> {
             }
         }
         "path:add" => {
-            let bin = home.join("bin");
+            // Taruh di depan PATH user supaya php/composer/node milik herdlite yang dipakai.
+            let dirs = [home.join("bin"), node::current_link(&home)];
+            let list = dirs.iter().map(|d| format!("'{}'", d.display())).collect::<Vec<_>>().join(",");
             let ps = format!(
-                "$b='{}'; $p=[Environment]::GetEnvironmentVariable('Path','User'); if(-not $p){{$p=''}}; \
-                 if(($p -split ';') -notcontains $b){{[Environment]::SetEnvironmentVariable('Path', ($b + ';' + $p).TrimEnd(';'), 'User'); 'ditambahkan'}} else {{'sudah ada'}}",
-                bin.display()
+                "$add=@({list}); $p=[Environment]::GetEnvironmentVariable('Path','User'); if(-not $p){{$p=''}}; \
+                 $rest=@($p -split ';' | Where-Object {{ $_ -and ($add -notcontains $_) }}); \
+                 [Environment]::SetEnvironmentVariable('Path', (($add + $rest) -join ';'), 'User'); 'ok'"
             );
             let out = Command::new("powershell").args(["-NoProfile", "-Command", &ps]).output().map_err(|e| e.to_string())?;
-            println!("✓ {} {} di PATH user. Buka terminal baru supaya berlaku.", bin.display(), String::from_utf8_lossy(&out.stdout).trim());
+            if String::from_utf8_lossy(&out.stdout).trim() != "ok" {
+                return Err(format!("gagal mengubah PATH: {}", String::from_utf8_lossy(&out.stderr).trim()));
+            }
+            for d in &dirs {
+                println!("✓ {} ada di depan PATH user", d.display());
+            }
+            println!("  Buka terminal baru supaya berlaku.");
+            println!("  Catatan: selama Herd masih terpasang, PATH sistem milik Herd (Node di C:\\Program Files\\nodejs) tetap didahulukan Windows.");
         }
         "autostart" => {
             let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
