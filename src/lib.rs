@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod fastcgi;
+pub mod hosts;
 pub mod phpinstall;
 pub mod pool;
 pub mod server;
