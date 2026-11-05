@@ -9,6 +9,10 @@ description = "Pengganti Laravel Herd yang sangat ringan untuk Windows: situs <f
 path = "src/lib.rs"
 
 [[bin]]
+name = "hl"
+path = "src/bin/hl.rs"
+
+[[bin]]
 name = "herdlited"
 path = "src/bin/herdlited.rs"
 
@@ -33,4 +37,3 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
-
