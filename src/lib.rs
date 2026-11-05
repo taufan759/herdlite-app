@@ -7,6 +7,7 @@ pub mod config;
 pub mod fastcgi;
 pub mod herdimport;
 pub mod hosts;
+pub mod node;
 pub mod phpinstall;
 pub mod pool;
 pub mod server;
