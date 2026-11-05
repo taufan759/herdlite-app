@@ -4,6 +4,7 @@
 //! - `herdlited.exe` : server latar belakang (HTTP + HTTPS + FastCGI ke php-cgi)
 
 pub mod config;
+pub mod pool;
 pub mod util;
 pub mod win;
 
