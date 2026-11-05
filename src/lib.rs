@@ -5,5 +5,6 @@
 
 pub mod config;
 pub mod util;
+pub mod win;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
