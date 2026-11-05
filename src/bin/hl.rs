@@ -64,6 +64,14 @@ Lain-lain:
 "#;
 
 fn main() {
+    // Output dipotong (mis. `hl sites | head`) bukan error: keluar diam-diam, jangan panic.
+    std::panic::set_hook(Box::new(|info| {
+        let msg = info.to_string();
+        if msg.contains("failed printing to std") {
+            std::process::exit(0);
+        }
+        eprintln!("✗ {msg}");
+    }));
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(args) {
         Ok(code) => std::process::exit(code),
