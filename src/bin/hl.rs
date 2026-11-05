@@ -57,6 +57,7 @@ Lain-lain:
   hl hosts sync                 tulis blok herdlite ke hosts (jalankan dari terminal Administrator)
   hl import-herd [--use-herd-php]    salin pengaturan park/link/isolate dari Herd (Herd tidak diubah)
   hl config [kunci [nilai]]     lihat / ubah config.json (mis. hl config http_port 8080)
+  hl doctor                     cek kesiapan pindah dari Herd (php/composer/node/hosts/port)
   hl path:add                   tambahkan <home>\bin dan Node aktif ke PATH user
   hl autostart on|off           jalankan herdlite otomatis saat login
   hl home                       tampilkan folder data herdlite
@@ -340,6 +341,7 @@ fn run(args: Vec<String>) -> Result<i32, String> {
                 println!("{} {v}", if Some(&v) == act.as_ref() { "*" } else { " " });
             }
         }
+        "doctor" => doctor(&home, &cfg),
 
         "secure" | "unsecure" => {
             let on = cmd == "secure";
@@ -654,4 +656,76 @@ fn status(home: &Path, cfg: &Config) {
     }
     println!("PHP      : global {}  ·  terpasang: {}", cfg.global_php(home).unwrap_or_else(|| "-".into()), cfg.installed_php(home).join(", "));
     println!("Situs    : {} ({} folder park, {} link, {} isolate)", cfg.sites().len(), cfg.paths.len(), cfg.links.len(), cfg.isolated.len());
+}
+
+/// Apakah path (setelah symlink/junction diikuti) masih menunjuk ke folder Herd?
+fn from_herd(p: &Path) -> bool {
+    let real = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let k = util::path_key(&real);
+    let raw = util::path_key(p);
+    [r"\.config\herd\", r"\config~1\herd\", r"\herd-data\", r"\programs\herd\"]
+        .iter()
+        .any(|m| k.contains(m) || raw.contains(m))
+}
+
+fn where_first(cmd: &str) -> Option<PathBuf> {
+    let out = Command::new("where.exe").arg(cmd).stderr(Stdio::null()).output().ok()?;
+    String::from_utf8_lossy(&out.stdout).lines().next().map(|l| PathBuf::from(l.trim())).filter(|p| !p.as_os_str().is_empty())
+}
+
+fn doctor(home: &Path, cfg: &Config) {
+    let mark = |b: bool| if b { "✓" } else { "✗" };
+    println!("Cek kesiapan pindah dari Herd ke herdlite ({})\n", home.display());
+
+    let php = cfg.global_php(home);
+    println!("{} PHP herdlite        : {}", mark(php.is_some()), php.clone().unwrap_or_else(|| "belum ada → hl php:install 8.3".into()));
+    let comp = home.join("bin").join("composer.phar").is_file();
+    println!("{} Composer herdlite   : {}", mark(comp), if comp { "ada" } else { "belum → hl composer:install" });
+    let lara = phpinstall::laravel_bat();
+    println!("{} Laravel installer   : {}", mark(lara.is_some()), lara.map(|p| p.display().to_string()).unwrap_or_else(|| "belum → hl laravel:install".into()));
+    let nd = node::active(home);
+    println!("{} Node herdlite       : {}", mark(nd.is_some()), nd.unwrap_or_else(|| "belum → hl node:install 26".into()));
+
+    println!("\nPerintah di PATH (terminal ini):");
+    for c in ["php", "composer", "laravel", "node", "npm"] {
+        match where_first(c) {
+            Some(p) => {
+                let herd = from_herd(&p);
+                println!("{} {c:<9} → {}{}", mark(!herd), p.display(), if herd { "  (masih dari Herd)" } else { "" });
+            }
+            None => println!("✗ {c:<9} → tidak ditemukan"),
+        }
+    }
+
+    println!("\nLain-lain:");
+    match hosts::missing(cfg) {
+        Ok(m) if m.is_empty() => println!("✓ hosts file        : semua nama .{} sudah ada", cfg.tld),
+        Ok(m) => println!("✗ hosts file        : {} nama belum ada → hl hosts sync (terminal Administrator)", m.len()),
+        Err(e) => println!("✗ hosts file        : {e}"),
+    }
+    for (label, port) in [("port HTTP ", cfg.http_port), ("port HTTPS", cfg.https_port)] {
+        if port == 0 {
+            continue;
+        }
+        let ours = running_pid(home).is_some();
+        match std::net::TcpListener::bind((cfg.bind.as_str(), port)) {
+            Ok(_) => println!("✓ {label}        : {port} bebas"),
+            Err(_) => {
+                let who = win::port_owner(port).unwrap_or_else(|| "proses lain".into());
+                let me = ours && who.to_lowercase().starts_with("herdlited");
+                println!("{} {label}        : {port} dipakai {who}", mark(me));
+            }
+        }
+    }
+    if cfg.http_port != 80 {
+        println!("! port HTTP herdlite : {} (bukan 80) → setelah Herd ditutup: hl config http_port 80 && hl config https_port 443 && hl restart", cfg.http_port);
+    }
+    println!("{} CA HTTPS dipercaya  : {}", mark(ca_trusted()), if ca_trusted() { "ya" } else { "belum → hl trust" });
+    let herd_running = Command::new("tasklist")
+        .args(["/FI", "IMAGENAME eq Herd.exe", "/NH"])
+        .creation_flags(win::CREATE_NO_WINDOW)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("Herd.exe"))
+        .unwrap_or(false);
+    println!("{} Herd               : {}", mark(!herd_running), if herd_running { "masih berjalan" } else { "tidak berjalan" });
 }
