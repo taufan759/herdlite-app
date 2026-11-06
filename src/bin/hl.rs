@@ -15,6 +15,7 @@ const HELP: &str = r#"herdlite — pengganti Laravel Herd yang ringan
 Paling mudah:
   hl setup                      siapkan semuanya sekaligus (PHP, Composer, Node, PATH, port 80/443,
                                 HTTPS, hosts lewat UAC, autostart, shortcut), lalu tampilkan hl doctor
+  hl uninstall [--yes]          bersihkan autostart, shortcut, PATH, CA, dan hosts (folder proyek aman)
 
 Server:
   hl start | stop | restart     nyalakan / matikan server latar belakang
@@ -60,6 +61,7 @@ HTTPS:
 Lain-lain:
   hl hosts                      cek nama .test yang belum ada di hosts file
   hl hosts sync                 tulis blok herdlite ke hosts (muncul jendela UAC, klik Yes)
+  hl hosts clear                hapus blok herdlite dari hosts
   hl import-herd [--use-herd-php]    salin pengaturan park/link/isolate dari Herd (Herd tidak diubah)
   hl config [kunci [nilai]]     lihat / ubah config.json (mis. hl config http_port 8080)
   hl doctor                     cek kesiapan pindah dari Herd (php/composer/node/hosts/port)
@@ -416,7 +418,9 @@ fn run(args: Vec<String>) -> Result<i32, String> {
 
         "hosts" => {
             if pos.first().map(|s| s.as_str()) == Some("sync") {
-                hosts_sync(&cfg, flag(&rest, "--elevated"))?;
+                hosts_write(&cfg, HostsMode::Sync, flag(&rest, "--elevated"))?;
+            } else if pos.first().map(|s| s.as_str()) == Some("clear") {
+                hosts_write(&cfg, HostsMode::Clear, flag(&rest, "--elevated"))?;
             } else {
                 let miss = hosts::missing(&cfg)?;
                 if miss.is_empty() {
@@ -474,6 +478,7 @@ fn run(args: Vec<String>) -> Result<i32, String> {
         },
         "shortcut" => shortcut(&home, flag(&rest, "--desktop"))?,
         "setup" => setup(&home)?,
+        "uninstall" => uninstall(&home, flag(&rest, "--yes"))?,
         "lock" => lock_permissions(&home)?,
         other => return Err(format!("perintah tidak dikenal: {other}  (lihat: hl help)")),
     }
@@ -753,34 +758,124 @@ fn trust_ca(home: &Path, cfg: &Config) -> Result<(), String> {
     Ok(())
 }
 
-/// Tulis hosts. Kalau bukan Administrator, minta izin lewat jendela UAC
-/// (proses hl kedua yang ter-elevasi), lalu periksa hasilnya.
-fn hosts_sync(cfg: &Config, elevated: bool) -> Result<(), String> {
-    match hosts::sync(cfg) {
-        Ok(n) => {
-            println!("✓ hosts diperbarui ({n} nama .{} → {})", cfg.tld, cfg.bind);
+#[derive(Clone, Copy, PartialEq)]
+enum HostsMode {
+    Sync,
+    Clear,
+}
+
+/// Tulis (sync) atau hapus (clear) blok herdlite di hosts. Kalau bukan Administrator,
+/// minta izin lewat jendela UAC (proses hl kedua yang ter-elevasi), lalu periksa hasilnya.
+fn hosts_write(cfg: &Config, mode: HostsMode, elevated: bool) -> Result<(), String> {
+    let res = match mode {
+        HostsMode::Sync => hosts::sync(cfg).map(|n| format!("hosts diperbarui ({n} nama .{} → {})", cfg.tld, cfg.bind)),
+        HostsMode::Clear => hosts::clear().map(|_| "blok herdlite dihapus dari hosts".to_string()),
+    };
+    match res {
+        Ok(msg) => {
+            println!("✓ {msg}");
             Ok(())
         }
         Err(e) if !elevated && e.starts_with("butuh hak Administrator") => {
-            println!("Meminta izin Administrator untuk menulis hosts (klik Yes pada jendela UAC)…");
+            println!("Meminta izin Administrator untuk mengubah hosts (klik Yes pada jendela UAC)…");
             let me = std::env::current_exe().map_err(|e| e.to_string())?;
+            let sub = if mode == HostsMode::Sync { "sync" } else { "clear" };
             let ps = format!(
-                "try {{ $p = Start-Process -FilePath '{}' -ArgumentList 'hosts','sync','--elevated' -Verb RunAs -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode }} catch {{ exit 1223 }}",
+                "try {{ $p = Start-Process -FilePath '{}' -ArgumentList 'hosts','{sub}','--elevated' -Verb RunAs -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode }} catch {{ exit 1223 }}",
                 me.display().to_string().replace('\'', "''")
             );
             let st = Command::new(win::sys("powershell.exe")).args(["-NoProfile", "-Command", &ps]).status().map_err(|e| e.to_string())?;
             if st.code() == Some(1223) {
                 return Err("dibatalkan di jendela UAC".into());
             }
-            let miss = hosts::missing(cfg)?;
-            if miss.is_empty() {
-                println!("✓ hosts diperbarui ({} nama .{})", hosts::wanted(cfg).len(), cfg.tld);
-                Ok(())
-            } else {
-                Err(format!("hosts belum lengkap, {} nama belum ada", miss.len()))
+            match mode {
+                HostsMode::Sync => {
+                    let miss = hosts::missing(cfg)?;
+                    if miss.is_empty() {
+                        println!("✓ hosts diperbarui ({} nama .{})", hosts::wanted(cfg).len(), cfg.tld);
+                        Ok(())
+                    } else {
+                        Err(format!("hosts belum lengkap, {} nama belum ada", miss.len()))
+                    }
+                }
+                HostsMode::Clear => {
+                    if hosts::has_block()? {
+                        Err("blok herdlite masih ada di hosts".into())
+                    } else {
+                        println!("✓ blok herdlite dihapus dari hosts");
+                        Ok(())
+                    }
+                }
             }
         }
         Err(e) => Err(e),
+    }
+}
+
+/// Hapus folder herdlite dari PATH user.
+fn path_remove(home: &Path) -> Result<(), String> {
+    let dirs = [home.join("bin"), node::current_link(home)];
+    let list = dirs.iter().map(|d| format!("'{}'", d.display().to_string().replace('\'', "''"))).collect::<Vec<_>>().join(",");
+    let ps = format!(
+        "$rm=@({list}); $p=[Environment]::GetEnvironmentVariable('Path','User'); if(-not $p){{$p=''}}; \
+         $keep=@($p -split ';' | Where-Object {{ $_ -and ($rm -notcontains $_) }}); \
+         [Environment]::SetEnvironmentVariable('Path', ($keep -join ';'), 'User'); 'ok'"
+    );
+    let out = Command::new(win::sys("powershell.exe")).args(["-NoProfile", "-Command", &ps]).output().map_err(|e| e.to_string())?;
+    if String::from_utf8_lossy(&out.stdout).trim() != "ok" {
+        return Err(format!("gagal mengubah PATH: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    println!("✓ herdlite dihapus dari PATH user");
+    Ok(())
+}
+
+/// Bersihkan semua perubahan sistem yang dibuat herdlite. File program dihapus oleh
+/// uninstaller (atau manual); folder proyek TIDAK pernah disentuh.
+fn uninstall(home: &Path, yes: bool) -> Result<(), String> {
+    let cfg = Config::load(home).unwrap_or_default();
+    if !yes {
+        println!("Ini akan menghentikan herdlite dan membersihkan autostart, shortcut, PATH, CA HTTPS, dan hosts.");
+        println!("Folder proyek ({}) TIDAK dihapus.", if cfg.paths.is_empty() { "-".into() } else { cfg.paths.join(", ") });
+        print!("Lanjutkan? (y/N) ");
+        let _ = std::io::stdout().flush();
+        let mut s = String::new();
+        let _ = std::io::stdin().read_line(&mut s);
+        if !s.trim().eq_ignore_ascii_case("y") {
+            return Err("dibatalkan".into());
+        }
+    }
+    stop(home, false);
+    let mut errs = Vec::new();
+    let mut step = |name: &str, r: Result<(), String>| {
+        if let Err(e) = r {
+            println!("✗ {name}: {e}");
+            errs.push(name.to_string());
+        }
+    };
+    step("autostart", autostart(false));
+    for f in ["Programs", "Desktop"] {
+        let ps = format!("$l=Join-Path ([Environment]::GetFolderPath('{f}')) 'herdlite.lnk'; if(Test-Path $l){{ Remove-Item $l -Force }}");
+        let _ = Command::new(win::sys("powershell.exe")).args(["-NoProfile", "-Command", &ps]).status();
+    }
+    println!("✓ shortcut dihapus");
+    step("PATH", path_remove(home));
+    if ca_trusted() {
+        println!("Menghapus CA herdlite dari Windows (klik Yes pada dialog)…");
+        let st = Command::new(win::sys("certutil.exe"))
+            .args(["-user", "-delstore", "Root", &tls::ca_name()])
+            .stdout(Stdio::null())
+            .status()
+            .map_err(|e| e.to_string());
+        step("CA", st.and_then(|s| if s.success() { Ok(()) } else { Err("certutil gagal / dibatalkan".into()) }));
+    }
+    if hosts::has_block().unwrap_or(false) {
+        step("hosts", hosts_write(&cfg, HostsMode::Clear, false));
+    }
+    if errs.is_empty() {
+        println!("✓ herdlite sudah dibersihkan dari sistem. Folder proyekmu tetap utuh.");
+        Ok(())
+    } else {
+        Err(format!("sebagian gagal: {}", errs.join(", ")))
     }
 }
 
@@ -919,7 +1014,7 @@ fn setup(home: &Path) -> Result<(), String> {
     println!("\n[7/8] hosts file");
     match hosts::missing(&cfg) {
         Ok(m) if m.is_empty() => println!("✓ semua nama .{} sudah ada", cfg.tld),
-        _ => step("hosts", hosts_sync(&cfg, false)),
+        _ => step("hosts", hosts_write(&cfg, HostsMode::Sync, false)),
     }
 
     println!("\n[8/8] Autostart dan shortcut Start Menu");

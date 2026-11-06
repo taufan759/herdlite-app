@@ -90,6 +90,46 @@ fn loopback(cfg: &Config) -> String {
     if cfg.bind == "0.0.0.0" { "127.0.0.1".into() } else { cfg.bind.clone() }
 }
 
+/// Apakah hosts file masih berisi blok herdlite?
+pub fn has_block() -> Result<bool, String> {
+    let text = fs::read_to_string(HOSTS).map_err(|e| format!("gagal membaca hosts: {e}"))?;
+    Ok(text.lines().any(|l| l.trim_start().starts_with("# herdlite-start")))
+}
+
+/// Isi hosts tanpa blok herdlite (baris lain tidak disentuh).
+pub fn strip(current: &str) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut inside = false;
+    for line in current.lines() {
+        if line.trim_start().starts_with("# herdlite-start") {
+            inside = true;
+            continue;
+        }
+        if line.trim_start().starts_with(END) {
+            inside = false;
+            continue;
+        }
+        if !inside {
+            kept.push(line);
+        }
+    }
+    while kept.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+        kept.pop();
+    }
+    let mut out = kept.join("\r\n");
+    out.push_str("\r\n");
+    out
+}
+
+/// Hapus blok herdlite dari hosts (dipakai saat uninstall).
+pub fn clear() -> Result<(), String> {
+    let text = fs::read_to_string(HOSTS).map_err(|e| format!("gagal membaca hosts: {e}"))?;
+    if !text.lines().any(|l| l.trim_start().starts_with("# herdlite-start")) {
+        return Ok(());
+    }
+    write_hosts(&text, &strip(&text))
+}
+
 /// Isi baru hosts file dengan blok herdlite diperbarui.
 pub fn render(current: &str, cfg: &Config) -> String {
     let mut kept: Vec<&str> = Vec::new();
@@ -128,9 +168,14 @@ pub fn sync(cfg: &Config) -> Result<usize, String> {
     check_safe(cfg)?;
     let text = fs::read_to_string(HOSTS).map_err(|e| format!("gagal membaca hosts: {e}"))?;
     let new = render(&text, cfg);
-    if new == text {
-        return Ok(wanted(cfg).len());
+    if new != text {
+        write_hosts(&text, &new)?;
     }
+    Ok(wanted(cfg).len())
+}
+
+/// Backup lalu tulis hosts. Gagal dengan pesan "butuh hak Administrator" kalau ditolak.
+fn write_hosts(old: &str, new: &str) -> Result<(), String> {
     // Backup dengan nama acak + create_new: proses ini berjalan sebagai admin, jadi jangan
     // menulis ke nama tetap yang bisa disiapkan lebih dulu sebagai symlink oleh proses lain.
     let mut rnd = [0u8; 8];
@@ -139,16 +184,15 @@ pub fn sync(cfg: &Config) -> Result<usize, String> {
     let backup = std::env::temp_dir().join(format!("hosts.herdlite-{tag}.bak"));
     if let Ok(mut f) = fs::OpenOptions::new().write(true).create_new(true).open(&backup) {
         use std::io::Write;
-        let _ = f.write_all(text.as_bytes());
+        let _ = f.write_all(old.as_bytes());
     }
     fs::write(HOSTS, new).map_err(|e| {
         if e.kind() == std::io::ErrorKind::PermissionDenied {
-            "butuh hak Administrator. Buka terminal \"Run as administrator\" lalu jalankan lagi: hl hosts sync".to_string()
+            "butuh hak Administrator untuk mengubah hosts".to_string()
         } else {
             format!("gagal menulis hosts: {e}")
         }
-    })?;
-    Ok(wanted(cfg).len())
+    })
 }
 
 #[cfg(test)]
@@ -163,6 +207,15 @@ mod tests {
         assert!(!out.contains("old.test"));
         assert!(out.contains("127.0.0.1 herdlite.test"));
         assert_eq!(out.matches("herdlite-start").count(), 1);
+    }
+
+    #[test]
+    fn strip_removes_only_our_block() {
+        let cur = "127.0.0.1 a.test\r\n\r\n# herdlite-start x\r\n127.0.0.1 b.test\r\n# herdlite-end\r\n";
+        let out = strip(cur);
+        assert!(out.contains("a.test"));
+        assert!(!out.contains("b.test"));
+        assert!(!out.contains("herdlite"));
     }
 
     #[test]
