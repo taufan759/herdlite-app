@@ -787,7 +787,7 @@ fn hosts_sync(cfg: &Config, elevated: bool) -> Result<(), String> {
 fn path_add(home: &Path) -> Result<(), String> {
     // Taruh di depan PATH user supaya php/composer/node milik herdlite yang dipakai.
     let dirs = [home.join("bin"), node::current_link(home)];
-    let list = dirs.iter().map(|d| format!("'{}'", d.display())).collect::<Vec<_>>().join(",");
+    let list = dirs.iter().map(|d| format!("'{}'", d.display().to_string().replace('\'', "''"))).collect::<Vec<_>>().join(",");
     let ps = format!(
         "$add=@({list}); $p=[Environment]::GetEnvironmentVariable('Path','User'); if(-not $p){{$p=''}}; \
          $rest=@($p -split ';' | Where-Object {{ $_ -and ($add -notcontains $_) }}); \
