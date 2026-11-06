@@ -365,7 +365,10 @@ async fn serve_site(
             if idx_php.is_file() || idx_html.is_file() {
                 if !segs.is_empty() && !raw_path.ends_with('/') {
                     let q = if query.is_empty() { String::new() } else { format!("?{query}") };
-                    return redirect(301, &format!("{raw_path}/{q}"));
+                    // Rapikan "//" di depan supaya redirect tidak jadi URL protocol-relative
+                    // (//situs-lain.com/…) alias open redirect.
+                    let clean = format!("/{}", raw_path.trim_start_matches('/'));
+                    return redirect(301, &format!("{clean}/{q}"));
                 }
                 if idx_php.is_file() {
                     let sn = if segs.is_empty() { "/index.php".to_string() } else { format!("/{}/index.php", segs.join("/")) };
@@ -461,17 +464,23 @@ async fn serve_site(
     if let Some(l) = content_len {
         p.push(("CONTENT_LENGTH".into(), l.to_string()));
     }
-    let mut has_host = false;
-    let mut merged: Vec<(String, String)> = Vec::new();
+    // HTTP_HOST selalu dari sumber yang sama dengan pemilihan situs (authority URI,
+    // kalau tidak ada baru header Host), supaya PHP tidak melihat host yang berbeda.
+    let http_host = parts
+        .uri
+        .authority()
+        .map(|a| a.as_str().to_string())
+        .or_else(|| parts.headers.get(header::HOST).and_then(|v| v.to_str().ok()).map(|s| s.to_string()))
+        .unwrap_or_else(|| host.to_string());
+    let mut merged: Vec<(String, String)> = vec![("HTTP_HOST".into(), http_host)];
     for (name, value) in parts.headers.iter() {
         let n = name.as_str();
-        if n == "content-type" || n == "content-length" || n == "proxy" {
+        // Header bergaris bawah (X_Foo) diabaikan seperti nginx, supaya tidak bisa
+        // menyamar sebagai X-Foo (keduanya jadi HTTP_X_FOO). httpoxy: Proxy dibuang.
+        if n == "content-type" || n == "content-length" || n == "proxy" || n == "host" || n.contains('_') {
             continue;
         }
         let key = format!("HTTP_{}", n.to_ascii_uppercase().replace('-', "_"));
-        if key == "HTTP_HOST" {
-            has_host = true;
-        }
         let v = String::from_utf8_lossy(value.as_bytes()).into_owned();
         if let Some(e) = merged.iter_mut().find(|(k, _)| *k == key) {
             e.1.push_str(if n == "cookie" { "; " } else { ", " });
@@ -479,10 +488,6 @@ async fn serve_site(
         } else {
             merged.push((key, v));
         }
-    }
-    if !has_host {
-        let authority = parts.uri.authority().map(|a| a.as_str().to_string()).unwrap_or_else(|| host.to_string());
-        merged.push(("HTTP_HOST".into(), authority));
     }
     p.extend(merged);
 
