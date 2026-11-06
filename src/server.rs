@@ -601,6 +601,16 @@ fn dashboard(st: &State, cfg: &Config) -> Response<Body> {
     let installed = cfg.installed_php(&st.home);
     let global = cfg.global_php(&st.home).unwrap_or_else(|| "-".into());
     let running: Vec<String> = st.pools.info().iter().map(|p| format!("{} (pid {})", p.version, p.pid)).collect();
+    let missing = crate::hosts::missing(cfg).unwrap_or_default();
+    let warn = if missing.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<p class=warn>{} nama belum ada di hosts file ({}). Jalankan <code>hl hosts sync</code> lalu klik Yes pada UAC.</p>",
+            missing.len(),
+            html_escape(&missing.iter().take(5).cloned().collect::<Vec<_>>().join(", "))
+        )
+    };
     let mut rows = String::new();
     for s in &sites {
         let php = cfg.php_for(&st.home, &s.name).unwrap_or_else(|| "-".into());
@@ -619,12 +629,13 @@ fn dashboard(st: &State, cfg: &Config) -> Response<Body> {
     }
     let html = format!(
         "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>herdlite</title>{CSS}\
-<main><h1>herdlite <span class=dim>{ver}</span></h1>\
+<main><h1>herdlite <span class=dim>{ver}</span></h1>{warn}\
 <p>PHP global: <b>{global}</b> · terpasang: {inst} · php-cgi aktif: {run}</p>\
 <p class=dim>Folder park: {paths}</p>\
 <table><thead><tr><th>Situs ({n})</th><th>PHP</th><th>Jenis</th><th>Folder</th></tr></thead><tbody>{rows}</tbody></table>\
 <p class=dim>Ubah lewat terminal: <code>hl park</code>, <code>hl link</code>, <code>hl isolate 8.4</code>, <code>hl secure</code>. Halaman ini hanya menampilkan.</p></main>",
         ver = crate::VERSION,
+        warn = warn,
         global = html_escape(&global),
         inst = if installed.is_empty() { "-".into() } else { installed.join(", ") },
         run = if running.is_empty() { "tidak ada (dinyalakan saat dibutuhkan)".into() } else { running.join(", ") },
@@ -642,4 +653,4 @@ const CSS: &str = "<style>:root{color-scheme:light dark;--bg:#fafaf9;--fg:#1c191
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,Segoe UI,sans-serif}main{max-width:1000px;margin:0 auto;padding:24px 16px}\
 h1{font-size:22px}a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}.dim{color:var(--dim)}\
 table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}\
-td.dim{word-break:break-all}.tag{font-size:11px;border:1px solid var(--line);border-radius:4px;padding:0 4px;color:var(--dim)}code{font-size:13px}</style>";
+td.dim{word-break:break-all}.tag{font-size:11px;border:1px solid var(--line);border-radius:4px;padding:0 4px;color:var(--dim)}code{font-size:13px}.warn{border:1px solid var(--acc);border-radius:6px;padding:8px 12px}</style>";
