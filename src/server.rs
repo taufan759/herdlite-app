@@ -60,6 +60,32 @@ pub fn dashboard_url(cfg: &Config) -> String {
     format!("http://{host}{}", port_suffix(false, cfg))
 }
 
+/// Buka dashboard sebagai jendela aplikasi (Edge mode --app: tanpa tab/address bar).
+/// Edge selalu ada di Windows 10/11; kalau tidak ditemukan, pakai browser bawaan.
+pub fn open_app(url: &str) {
+    use std::os::windows::process::CommandExt;
+    let candidates = [
+        std::env::var("ProgramFiles(x86)").ok(),
+        std::env::var("ProgramFiles").ok(),
+        std::env::var("LOCALAPPDATA").ok(),
+    ];
+    for base in candidates.into_iter().flatten() {
+        let edge = PathBuf::from(base).join(r"Microsoft\Edge\Application\msedge.exe");
+        if edge.is_file() {
+            let ok = std::process::Command::new(&edge)
+                .arg(format!("--app={url}"))
+                .arg("--window-size=1100,760")
+                .creation_flags(crate::win::CREATE_NO_WINDOW)
+                .spawn()
+                .is_ok();
+            if ok {
+                return;
+            }
+        }
+    }
+    open_url(url);
+}
+
 /// Buka URL di browser bawaan.
 pub fn open_url(url: &str) {
     use std::os::windows::process::CommandExt;

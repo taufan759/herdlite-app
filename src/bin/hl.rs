@@ -15,6 +15,7 @@ const HELP: &str = r#"herdlite — pengganti Laravel Herd yang ringan
 Paling mudah:
   hl setup                      siapkan semuanya sekaligus (PHP, Composer, Node, PATH, port 80/443,
                                 HTTPS, hosts lewat UAC, autostart, shortcut), lalu tampilkan hl doctor
+  hl app                        buka dashboard sebagai jendela aplikasi
   hl uninstall [--yes]          bersihkan autostart, shortcut, PATH, CA, dan hosts (folder proyek aman)
 
 Server:
@@ -479,6 +480,13 @@ fn run(args: Vec<String>) -> Result<i32, String> {
         "shortcut" => shortcut(&home, flag(&rest, "--desktop"))?,
         "setup" => setup(&home)?,
         "uninstall" => uninstall(&home, flag(&rest, "--yes"))?,
+        "app" | "dashboard" => {
+            let url = server::dashboard_url(&cfg);
+            if running_pid(&home).is_none() {
+                start(&home, &cfg)?;
+            }
+            server::open_app(&url);
+        }
         "lock" => lock_permissions(&home)?,
         other => return Err(format!("perintah tidak dikenal: {other}  (lihat: hl help)")),
     }

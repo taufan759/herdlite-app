@@ -15,7 +15,7 @@ fn main() {
         if pid != std::process::id() && win::pid_is(pid, "herdlited.exe") {
             if open {
                 if let Ok(cfg) = config::Config::load(&home) {
-                    server::open_url(&server::dashboard_url(&cfg));
+                    server::open_app(&server::dashboard_url(&cfg));
                 }
             } else {
                 util::append_log(&log, &format!("herdlited sudah berjalan (pid {pid}), instance baru keluar"));
@@ -31,7 +31,7 @@ fn main() {
             let t = Instant::now();
             while t.elapsed() < Duration::from_secs(10) {
                 if std::net::TcpStream::connect(&addr).is_ok() {
-                    server::open_url(&server::dashboard_url(&cfg));
+                    server::open_app(&server::dashboard_url(&cfg));
                     return;
                 }
                 std::thread::sleep(Duration::from_millis(100));
