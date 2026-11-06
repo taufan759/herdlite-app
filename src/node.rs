@@ -27,7 +27,7 @@ fn sys(name: &str) -> PathBuf {
 }
 
 fn curl_text(url: &str) -> Result<String, String> {
-    let out = Command::new(sys("curl.exe")).args(["-fsSL", url]).output().map_err(|e| e.to_string())?;
+    let out = Command::new(sys("curl.exe")).args(["-fsSL", "--proto", "=https", "--proto-redir", "=https", url]).output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(format!("gagal mengunduh {url}"));
     }
@@ -112,6 +112,10 @@ fn sha256_hex(path: &Path) -> Result<String, String> {
 
 pub fn install(home: &Path, spec: &str) -> Result<String, String> {
     let ver = resolve(spec)?;
+    // Versi dari index.json dipakai sebagai nama folder dan URL: hanya angka dan titik.
+    if ver.is_empty() || !ver.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return Err(format!("versi Node tidak wajar: {ver}"));
+    }
     let dest = node_root(home).join(&ver);
     if dest.join("node.exe").is_file() {
         return Err(format!("Node {ver} sudah terpasang. Aktifkan: hl node:use {ver}"));

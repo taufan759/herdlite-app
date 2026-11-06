@@ -19,7 +19,7 @@ fn sys_tool(name: &str) -> PathBuf {
 
 fn curl_text(url: &str) -> Result<String, String> {
     let out = Command::new(sys_tool("curl.exe"))
-        .args(["-fsSL", url])
+        .args(["-fsSL", "--proto", "=https", "--proto-redir", "=https", url])
         .output()
         .map_err(|e| format!("curl.exe tidak bisa dijalankan: {e}"))?;
     if !out.status.success() {
@@ -33,7 +33,7 @@ pub fn download(url: &str, dest: &Path) -> Result<(), String> {
         fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
     let st = Command::new(sys_tool("curl.exe"))
-        .args(["-fL", "--progress-bar", "-o"])
+        .args(["-fL", "--proto", "=https", "--proto-redir", "=https", "--progress-bar", "-o"])
         .arg(dest)
         .arg(url)
         .status()
@@ -131,17 +131,22 @@ pub fn install(home: &Path, ver: &str, force: bool) -> Result<String, String> {
     if dest.join("php-cgi.exe").is_file() && !force {
         return Err(format!("PHP {ver} sudah terpasang di {}. Pakai --force untuk memasang ulang.", dest.display()));
     }
+    // Nama file dari releases.json dipakai sebagai path: hanya izinkan nama zip polos.
+    if !safe_file_name(&rel.zip) || !rel.zip.ends_with(".zip") {
+        return Err(format!("nama file rilis tidak wajar: {}", rel.zip));
+    }
+    if rel.sha256.len() != 64 || !rel.sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("releases.json tidak menyertakan checksum SHA-256; pemasangan dibatalkan".into());
+    }
     let dl = home.join("downloads").join(&rel.zip);
     println!("Mengunduh PHP {} ({})", rel.version, rel.zip);
     download(&format!("{BASE}{}", rel.zip), &dl)?;
-    if !rel.sha256.is_empty() {
-        let got = sha256_hex(&dl)?;
-        if !got.eq_ignore_ascii_case(&rel.sha256) {
-            let _ = fs::remove_file(&dl);
-            return Err(format!("checksum SHA-256 tidak cocok (diharapkan {}, didapat {got})", rel.sha256));
-        }
-        println!("Checksum SHA-256 cocok.");
+    let got = sha256_hex(&dl)?;
+    if !got.eq_ignore_ascii_case(&rel.sha256) {
+        let _ = fs::remove_file(&dl);
+        return Err(format!("checksum SHA-256 tidak cocok (diharapkan {}, didapat {got})", rel.sha256));
     }
+    println!("Checksum SHA-256 cocok.");
     let tmp = home.join("php").join(format!(".tmp-{ver}"));
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
@@ -176,9 +181,31 @@ pub fn ensure_cacert(home: &Path) -> Result<(), String> {
 }
 
 pub fn install_composer(home: &Path) -> Result<PathBuf, String> {
+    let want = curl_text(&format!("{COMPOSER}.sha256sum"))?
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
+    if want.len() != 64 || !want.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("checksum composer.phar tidak bisa diambil".into());
+    }
     let p = home.join("bin").join("composer.phar");
-    download(COMPOSER, &p)?;
+    let tmp = home.join("downloads").join("composer.phar.part");
+    download(COMPOSER, &tmp)?;
+    let got = sha256_hex(&tmp)?;
+    if got != want {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("checksum composer.phar tidak cocok (diharapkan {want}, didapat {got})"));
+    }
+    println!("Checksum SHA-256 composer.phar cocok.");
+    let _ = fs::remove_file(&p);
+    fs::rename(&tmp, &p).map_err(|e| e.to_string())?;
     Ok(p)
+}
+
+/// Nama file polos tanpa folder atau karakter aneh.
+pub fn safe_file_name(n: &str) -> bool {
+    !n.is_empty() && !n.starts_with('.') && n.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }
 
 /// Lokasi laravel.bat dari `composer global require laravel/installer`, kalau ada.
