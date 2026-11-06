@@ -80,8 +80,14 @@ pub fn norm(s: &str) -> String {
     s.trim().to_lowercase().replace('_', "-")
 }
 
+/// Nama situs yang sah: label DNS (huruf/angka/'-') dipisah titik, tanpa label kosong.
+/// Menolak ".", "..", "...", ".a", "a." sehingga nama tidak bisa menunjuk ke luar folder park.
 fn valid_name(n: &str) -> bool {
-    !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+    !n.is_empty()
+        && n.len() <= 200
+        && n.split('.').all(|l| {
+            !l.is_empty() && !l.starts_with('-') && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        })
 }
 
 /// Folder data herdlite.
@@ -303,5 +309,19 @@ mod tests {
         assert_eq!(parse_ver("8.4.27").as_deref(), Some("8.4"));
         assert_eq!(parse_ver("abc"), None);
         assert_eq!(norm("Lunaray_New"), "lunaray-new");
+    }
+
+    #[test]
+    fn names_cannot_escape() {
+        for bad in ["", ".", "..", "...", ".a", "a.", "a..b", "-a", "a/b", "a\\b", "a b"] {
+            assert!(!valid_name(bad), "{bad:?} harus ditolak");
+        }
+        for ok in ["raystore", "lunaray-new", "foo.bar", "app2"] {
+            assert!(valid_name(ok), "{ok:?} harus diterima");
+        }
+        let mut cfg = Config::default();
+        cfg.paths = vec![std::env::temp_dir().to_string_lossy().to_string()];
+        assert!(cfg.find_site("..").is_none());
+        assert!(cfg.find_site(".").is_none());
     }
 }
