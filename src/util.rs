@@ -7,6 +7,10 @@ pub fn append_log(path: &Path, msg: &str) {
     if let Some(d) = path.parent() {
         let _ = std::fs::create_dir_all(d);
     }
+    // Rotasi sederhana: lebih dari 5 MB → simpan sebagai .old (satu generasi) lalu mulai baru.
+    if std::fs::metadata(path).map(|m| m.len() > 5 * 1024 * 1024).unwrap_or(false) {
+        let _ = std::fs::rename(path, path.with_extension("log.old"));
+    }
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(f, "[{}] {}", now_str(), msg.trim_end());
     }
