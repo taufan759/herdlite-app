@@ -1,6 +1,6 @@
 [package]
 name = "herdlite"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 description = "Pengganti Laravel Herd yang sangat ringan untuk Windows: situs <folder>.test, PHP per situs, park/link, HTTPS lokal."
