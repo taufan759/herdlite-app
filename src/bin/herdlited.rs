@@ -12,7 +12,7 @@ fn main() {
     let open = std::env::args().any(|a| a == "--open");
     let pidp = server::pid_path(&home);
     if let Some(pid) = std::fs::read_to_string(&pidp).ok().and_then(|s| s.trim().parse::<u32>().ok()) {
-        if pid != std::process::id() && win::pid_alive(pid) {
+        if pid != std::process::id() && win::pid_is(pid, "herdlited.exe") {
             if open {
                 if let Ok(cfg) = config::Config::load(&home) {
                     server::open_url(&server::dashboard_url(&cfg));

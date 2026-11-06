@@ -41,6 +41,38 @@ pub fn pid_alive(pid: u32) -> bool {
     }
 }
 
+/// Nama file exe dari proses dengan PID ini (mis. "herdlited.exe").
+pub fn pid_image(pid: u32) -> Option<String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    if pid == 0 {
+        return None;
+    }
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return None;
+        }
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut len);
+        CloseHandle(h);
+        if ok == 0 {
+            return None;
+        }
+        let full = String::from_utf16_lossy(&buf[..len as usize]);
+        full.rsplit('\\').next().map(|s| s.to_string())
+    }
+}
+
+/// Apakah PID ini masih hidup DAN memang menjalankan exe dengan nama itu?
+/// Mencegah PID lama di file pid (yang sudah dipakai ulang proses lain) ikut dimatikan.
+pub fn pid_is(pid: u32, exe: &str) -> bool {
+    pid_alive(pid) && pid_image(pid).map(|n| n.eq_ignore_ascii_case(exe)).unwrap_or(false)
+}
+
 /// Matikan proses beserta anak-anaknya.
 pub fn kill_tree(pid: u32) {
     let _ = Command::new(sys("taskkill.exe"))

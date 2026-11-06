@@ -523,7 +523,7 @@ fn read_pid(home: &Path) -> Option<u32> {
 }
 
 fn running_pid(home: &Path) -> Option<u32> {
-    read_pid(home).filter(|p| win::pid_alive(*p))
+    read_pid(home).filter(|p| win::pid_is(*p, "herdlited.exe"))
 }
 
 fn port_free(bind: &str, port: u16) -> Result<(), String> {
