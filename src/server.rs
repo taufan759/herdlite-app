@@ -50,6 +50,25 @@ pub fn pid_path(home: &Path) -> PathBuf {
     home.join("run").join("herdlited.pid")
 }
 
+/// URL dashboard: herdlite.<tld> kalau sudah ada di hosts, selain itu 127.0.0.1.
+pub fn dashboard_url(cfg: &Config) -> String {
+    let name = format!("herdlite.{}", cfg.tld);
+    let host = match crate::hosts::missing(cfg) {
+        Ok(m) if !m.contains(&name) => name,
+        _ => "127.0.0.1".into(),
+    };
+    format!("http://{host}{}", port_suffix(false, cfg))
+}
+
+/// Buka URL di browser bawaan.
+pub fn open_url(url: &str) {
+    use std::os::windows::process::CommandExt;
+    let _ = std::process::Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url])
+        .creation_flags(crate::win::CREATE_NO_WINDOW)
+        .spawn();
+}
+
 fn full<T: Into<Bytes>>(b: T) -> Body {
     Full::new(b.into()).map_err(|n: Infallible| match n {}).boxed()
 }
