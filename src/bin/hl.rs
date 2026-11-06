@@ -66,6 +66,7 @@ Lain-lain:
   hl autostart on|off           jalankan herdlite otomatis saat login
   hl shortcut [--desktop]       shortcut "herdlite" di Start Menu: klik = nyala + buka dashboard
   hl home                       tampilkan folder data herdlite
+  hl lock                       kunci izin folder herdlite (otomatis dijalankan oleh hl setup)
 "#;
 
 fn main() {
@@ -453,6 +454,7 @@ fn run(args: Vec<String>) -> Result<i32, String> {
         },
         "shortcut" => shortcut(&home, flag(&rest, "--desktop"))?,
         "setup" => setup(&home)?,
+        "lock" => lock_permissions(&home)?,
         other => return Err(format!("perintah tidak dikenal: {other}  (lihat: hl help)")),
     }
     Ok(0)
@@ -903,8 +905,42 @@ fn setup(home: &Path) -> Result<(), String> {
     println!("\n[8/8] Autostart dan shortcut Start Menu");
     step("autostart", autostart(true));
     step("shortcut", shortcut(home, false));
+    step("izin folder", lock_permissions(home));
 
     println!();
     doctor(home, &cfg);
+    Ok(())
+}
+
+/// Kunci izin folder herdlite: hanya akun ini, SYSTEM, dan Administrators yang boleh menulis
+/// (folder di drive D biasanya mewarisi "Authenticated Users: Modify"). Kunci CA hanya bisa
+/// dibaca akun ini. Mencegah akun/proses lain mengganti hl.exe yang dijalankan lewat UAC,
+/// mengubah config.json, atau membaca kunci CA.
+fn lock_permissions(home: &Path) -> Result<(), String> {
+    let me = format!(
+        "{}\\{}",
+        std::env::var("USERDOMAIN").unwrap_or_default(),
+        std::env::var("USERNAME").map_err(|_| "USERNAME tidak diketahui")?
+    );
+    let full = format!("{me}:(OI)(CI)F");
+    let icacls = |path: &Path, extra: &[&str]| -> Result<(), String> {
+        let mut args: Vec<String> = vec![path.display().to_string(), "/inheritance:r".into(), "/grant:r".into()];
+        args.extend(["*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", full.as_str()].iter().map(|s| s.to_string()));
+        args.extend(extra.iter().map(|s| s.to_string()));
+        args.push("/Q".into());
+        let out = Command::new("icacls").args(&args).output().map_err(|e| e.to_string())?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        }
+    };
+    // Users tetap boleh membaca & menjalankan (php.exe, node.exe), tapi tidak menulis.
+    icacls(home, &["*S-1-5-32-545:(OI)(CI)RX"])?;
+    let certs = tls::cert_dir(home);
+    if certs.is_dir() {
+        icacls(&certs, &[])?;
+    }
+    println!("✓ Izin folder dikunci: hanya {me}, SYSTEM, dan Administrators yang bisa menulis; kunci CA hanya untuk {me}");
     Ok(())
 }
