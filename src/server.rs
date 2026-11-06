@@ -28,6 +28,10 @@ pub struct State {
     log: PathBuf,
     phplog: PathBuf,
     started: SystemTime,
+    /// Token acak per sesi server untuk API dashboard.
+    token: String,
+    job: Mutex<Option<(String, std::process::Child)>>,
+    job_result: Mutex<Option<String>>,
 }
 
 impl State {
@@ -44,6 +48,12 @@ impl State {
         }
         g.0.clone()
     }
+}
+
+fn new_token() -> String {
+    let mut b = [0u8; 24];
+    let _ = ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut b);
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 pub fn pid_path(home: &Path) -> PathBuf {
@@ -143,6 +153,9 @@ async fn serve(home: PathBuf) -> Result<(), String> {
         log: log.clone(),
         phplog: home.join("logs").join("php.log"),
         started: SystemTime::now(),
+        token: new_token(),
+        job: Mutex::new(None),
+        job_result: Mutex::new(None),
     });
 
     let http = TcpListener::bind((cfg.bind.as_str(), cfg.http_port))
@@ -251,10 +264,14 @@ async fn handle(st: Arc<State>, req: Request<Incoming>, https: bool, remote: Soc
     let suffix = format!(".{}", cfg.tld);
 
     if host.is_empty() || host == "localhost" || host.parse::<IpAddr>().is_ok() || host == format!("herdlite{suffix}") {
-        if req.uri().path() == "/__herdlite/status" {
+        let path = req.uri().path().to_string();
+        if path == "/__herdlite/status" {
             return status_json(&st, &cfg);
         }
-        return dashboard(&st, &cfg);
+        if let Some(action) = path.strip_prefix("/__herdlite/api/") {
+            return api(&st, req, action).await;
+        }
+        return dashboard_page(&st);
     }
     let Some(prefix) = host.strip_suffix(&suffix) else {
         return simple(404, "Domain tidak dikenal", &format!("herdlite hanya melayani domain <b>*{}</b>.", html_escape(&suffix)));
@@ -665,56 +682,252 @@ fn status_json(st: &State, cfg: &Config) -> Response<Body> {
         .unwrap()
 }
 
-fn dashboard(st: &State, cfg: &Config) -> Response<Body> {
-    let sites = cfg.sites();
-    let installed = cfg.installed_php(&st.home);
-    let global = cfg.global_php(&st.home).unwrap_or_else(|| "-".into());
-    let running: Vec<String> = st.pools.info().iter().map(|p| format!("{} (pid {})", p.version, p.pid)).collect();
-    let missing = crate::hosts::missing(cfg).unwrap_or_default();
-    let warn = if missing.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "<p class=warn>{} nama belum ada di hosts file ({}). Jalankan <code>hl hosts sync</code> lalu klik Yes pada UAC.</p>",
-            missing.len(),
-            html_escape(&missing.iter().take(5).cloned().collect::<Vec<_>>().join(", "))
-        )
-    };
-    let mut rows = String::new();
-    for s in &sites {
-        let php = cfg.php_for(&st.home, &s.name).unwrap_or_else(|| "-".into());
-        let iso = cfg.isolated.contains_key(&s.name);
-        let url = cfg.url(&s.name);
-        rows.push_str(&format!(
-            "<tr><td><a href=\"{u}\">{h}</a>{lock}</td><td>{php}{isotag}</td><td>{kind}</td><td class=dim>{path}</td></tr>",
-            u = html_escape(&url),
-            h = html_escape(&cfg.host(&s.name)),
-            lock = if cfg.is_secured(&s.name) { " 🔒" } else { "" },
-            php = html_escape(&php),
-            isotag = if iso { " <span class=tag>isolated</span>" } else { "" },
-            kind = if s.kind == Kind::Linked { "link" } else { "park" },
-            path = html_escape(&s.path.to_string_lossy()),
-        ));
-    }
-    let html = format!(
-        "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>herdlite</title>{CSS}\
-<main><h1>herdlite <span class=dim>{ver}</span></h1>{warn}\
-<p>PHP global: <b>{global}</b> · terpasang: {inst} · php-cgi aktif: {run}</p>\
-<p class=dim>Folder park: {paths}</p>\
-<table><thead><tr><th>Situs ({n})</th><th>PHP</th><th>Jenis</th><th>Folder</th></tr></thead><tbody>{rows}</tbody></table>\
-<p class=dim>Ubah lewat terminal: <code>hl park</code>, <code>hl link</code>, <code>hl isolate 8.4</code>, <code>hl secure</code>. Halaman ini hanya menampilkan.</p></main>",
-        ver = crate::VERSION,
-        warn = warn,
-        global = html_escape(&global),
-        inst = if installed.is_empty() { "-".into() } else { installed.join(", ") },
-        run = if running.is_empty() { "tidak ada (dinyalakan saat dibutuhkan)".into() } else { running.join(", ") },
-        paths = if cfg.paths.is_empty() { "-".into() } else { html_escape(&cfg.paths.join(" · ")) },
-        n = sites.len(),
-    );
+fn json_resp(code: u16, v: serde_json::Value) -> Response<Body> {
+    Response::builder()
+        .status(code)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(full(v.to_string()))
+        .unwrap()
+}
+
+/// Halaman dashboard. Token disisipkan ke halaman; hanya halaman yang dibuka langsung di
+/// herdlite.<tld>/localhost yang bisa membacanya (website lain terhalang same-origin policy).
+fn dashboard_page(st: &State) -> Response<Body> {
+    let html = include_str!("dashboard.html").replace("{{TOKEN}}", &st.token);
     Response::builder()
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-store")
+        .header("X-Frame-Options", "DENY")
+        .header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+        )
         .body(full(html))
         .unwrap()
+}
+
+/// Versi PHP yang ditawarkan di dashboard untuk dipasang.
+const PHP_INSTALLABLE: &[&str] = &["7.4", "8.0", "8.1", "8.2", "8.3", "8.4", "8.5"];
+
+fn job_status(st: &State) -> (Option<String>, Option<String>) {
+    if let Ok(mut j) = st.job.lock() {
+        if let Some((label, child)) = j.as_mut() {
+            match child.try_wait() {
+                Ok(None) => return (Some(format!("Memasang {label}… (biasanya 1–3 menit)")), None),
+                Ok(Some(s)) => {
+                    let res = if s.success() {
+                        format!("✓ {label} terpasang")
+                    } else {
+                        format!("✗ {label} gagal dipasang (lihat logs\\install.log)")
+                    };
+                    if let Ok(mut r) = st.job_result.lock() {
+                        *r = Some(res);
+                    }
+                    *j = None;
+                }
+                Err(_) => *j = None,
+            }
+        }
+    }
+    (None, st.job_result.lock().ok().and_then(|r| r.clone()))
+}
+
+fn api_state(st: &State) -> serde_json::Value {
+    let cfg = st.cfg();
+    let home = &st.home;
+    let global = cfg.global_php(home);
+    let sites: Vec<serde_json::Value> = cfg
+        .sites()
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "name": s.name,
+                "host": cfg.host(&s.name),
+                "url": cfg.url(&s.name),
+                "php": cfg.php_for(home, &s.name),
+                "isolated": cfg.isolated.contains_key(&s.name),
+                "path": s.path.to_string_lossy(),
+                "linked": s.kind == Kind::Linked,
+            })
+        })
+        .collect();
+    let (job, job_result) = job_status(st);
+    serde_json::json!({
+        "version": crate::VERSION,
+        "tld": cfg.tld,
+        "http_port": cfg.http_port,
+        "https_port": cfg.https_port,
+        "php_installed": cfg.installed_php(home),
+        "php_global": global,
+        "php_running": st.pools.info().iter().map(|p| p.version.clone()).collect::<Vec<_>>(),
+        "php_installable": PHP_INSTALLABLE,
+        "sites": sites,
+        "hosts_missing": crate::hosts::missing(&cfg).unwrap_or_default(),
+        "sites_dir": cfg.paths.first(),
+        "job": job,
+        "job_result": job_result,
+    })
+}
+
+fn hl_exe() -> Result<PathBuf, String> {
+    let p = std::env::current_exe().map_err(|e| e.to_string())?.with_file_name("hl.exe");
+    if p.is_file() { Ok(p) } else { Err("hl.exe tidak ditemukan di sebelah herdlited.exe".into()) }
+}
+
+fn spawn_quiet(cmd: &mut std::process::Command) -> Result<std::process::Child, String> {
+    use std::os::windows::process::CommandExt;
+    cmd.stdin(std::process::Stdio::null())
+        .creation_flags(crate::win::CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|e| e.to_string())
+}
+
+fn explorer(path: &Path) -> Result<(), String> {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    std::process::Command::new(PathBuf::from(root).join("explorer.exe"))
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Terminal di folder tertentu: Windows Terminal kalau ada, selain itu cmd.
+fn terminal(path: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    if let Ok(la) = std::env::var("LOCALAPPDATA") {
+        let wt = PathBuf::from(la).join(r"Microsoft\WindowsApps\wt.exe");
+        if wt.exists() && std::process::Command::new(&wt).arg("-d").arg(path).spawn().is_ok() {
+            return Ok(());
+        }
+    }
+    std::process::Command::new(crate::win::sys("cmd.exe"))
+        .raw_arg(format!("/c start \"\" /D \"{}\" \"{}\"", path.display(), crate::win::sys("cmd.exe").display()))
+        .creation_flags(crate::win::CREATE_NO_WINDOW)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+const NEW_SITE_INDEX: &str = "<?php\n// Situs baru dari dashboard herdlite. Ubah file ini lalu refresh browser.\n?>\n<!doctype html>\n<meta charset=\"utf-8\">\n<title><?= htmlspecialchars($_SERVER['HTTP_HOST'] ?? 'situs') ?></title>\n<h1>Halo dari <?= htmlspecialchars($_SERVER['HTTP_HOST'] ?? 'situs') ?></h1>\n<p>PHP <?= PHP_VERSION ?> · file ini: <code><?= htmlspecialchars(__FILE__) ?></code></p>\n";
+
+fn api_action(st: &State, action: &str, v: &serde_json::Value) -> Result<String, String> {
+    let home = &st.home;
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    let mut cfg = Config::load(home)?;
+    let site_of = |cfg: &Config, name: &str| cfg.find_site(name).ok_or_else(|| format!("situs '{name}' tidak ditemukan"));
+    match action {
+        "set_php" => {
+            let site = site_of(&cfg, &s("site"))?;
+            let ver = s("version");
+            if ver.is_empty() {
+                cfg.isolated.remove(&site.name);
+            } else {
+                let ver = config::parse_ver(&ver).ok_or("versi tidak valid")?;
+                if !cfg.installed_php(home).contains(&ver) {
+                    return Err(format!("PHP {ver} belum terpasang"));
+                }
+                cfg.isolated.insert(site.name.clone(), ver);
+            }
+            cfg.save(home)?;
+            Ok(String::new())
+        }
+        "set_global" => {
+            let ver = config::parse_ver(&s("version")).ok_or("versi tidak valid")?;
+            if !cfg.installed_php(home).contains(&ver) {
+                return Err(format!("PHP {ver} belum terpasang"));
+            }
+            cfg.default_php = ver;
+            cfg.save(home)?;
+            crate::phpinstall::write_shims(home, &cfg)?;
+            Ok(String::new())
+        }
+        "open_folder" => explorer(&site_of(&cfg, &s("site"))?.path).map(|_| String::new()),
+        "open_terminal" => terminal(&site_of(&cfg, &s("site"))?.path).map(|_| String::new()),
+        "open_sites_dir" => {
+            let d = cfg.paths.first().ok_or("belum ada folder proyek")?;
+            explorer(Path::new(d)).map(|_| String::new())
+        }
+        "new_site" => {
+            let name = s("name").to_lowercase();
+            let ok = !name.is_empty()
+                && name.len() <= 63
+                && !name.starts_with('-')
+                && !name.ends_with('-')
+                && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+            if !ok {
+                return Err("nama hanya boleh huruf kecil, angka, dan '-' (mis. toko-online)".into());
+            }
+            let dir = PathBuf::from(cfg.paths.first().ok_or("belum ada folder proyek")?).join(&name);
+            if dir.exists() {
+                return Err(format!("folder {} sudah ada", dir.display()));
+            }
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            std::fs::write(dir.join("index.php"), NEW_SITE_INDEX).map_err(|e| e.to_string())?;
+            let missing = crate::hosts::missing(&cfg).unwrap_or_default().contains(&cfg.host(&name));
+            Ok(if missing {
+                format!("Situs {} dibuat. Klik \"Daftarkan sekarang\" supaya bisa dibuka.", cfg.host(&name))
+            } else {
+                format!("Situs {} dibuat", cfg.host(&name))
+            })
+        }
+        "hosts_sync" => {
+            spawn_quiet(std::process::Command::new(hl_exe()?).args(["hosts", "sync"]).stdout(std::process::Stdio::null()))?;
+            Ok("Pilih Yes pada jendela izin Windows…".into())
+        }
+        "install_php" => {
+            let ver = config::parse_ver(&s("version")).ok_or("versi tidak valid")?;
+            if !PHP_INSTALLABLE.contains(&ver.as_str()) {
+                return Err("versi tidak tersedia".into());
+            }
+            let mut job = st.job.lock().map_err(|_| "lock")?;
+            if job.is_some() {
+                return Err("masih ada pemasangan yang berjalan".into());
+            }
+            let _ = std::fs::create_dir_all(home.join("logs"));
+            let log = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(home.join("logs").join("install.log"))
+                .map_err(|e| e.to_string())?;
+            let log2 = log.try_clone().map_err(|e| e.to_string())?;
+            let child = spawn_quiet(std::process::Command::new(hl_exe()?).args(["php:install", &ver]).stdout(log).stderr(log2))?;
+            *job = Some((format!("PHP {ver}"), child));
+            if let Ok(mut r) = st.job_result.lock() {
+                *r = None;
+            }
+            Ok(format!("Memasang PHP {ver}…"))
+        }
+        _ => Err(format!("aksi '{action}' tidak dikenal")),
+    }
+}
+
+/// API dashboard. Wajib header X-Herdlite-Token (memaksa preflight CORS, jadi website lain
+/// tidak bisa memanggilnya) dan token yang hanya ada di halaman dashboard.
+async fn api(st: &Arc<State>, req: Request<Incoming>, action: &str) -> Response<Body> {
+    let tok_ok = req.headers().get("x-herdlite-token").and_then(|v| v.to_str().ok()) == Some(st.token.as_str());
+    let site_ok = match req.headers().get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
+        None => true,
+        Some(v) => v == "same-origin" || v == "none",
+    };
+    if !tok_ok || !site_ok {
+        return json_resp(403, serde_json::json!({"ok": false, "error": "token tidak valid, muat ulang halaman"}));
+    }
+    if action == "state" {
+        return json_resp(200, api_state(st));
+    }
+    if req.method() != Method::POST {
+        return json_resp(405, serde_json::json!({"ok": false, "error": "harus POST"}));
+    }
+    let body = match Limited::new(req.into_body(), 64 * 1024).collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => return json_resp(413, serde_json::json!({"ok": false, "error": "body terlalu besar"})),
+    };
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or(serde_json::json!({}));
+    match api_action(st, action, &v) {
+        Ok(msg) => json_resp(200, serde_json::json!({"ok": true, "message": msg})),
+        Err(e) => json_resp(400, serde_json::json!({"ok": false, "error": e})),
+    }
 }
 
 const CSS: &str = "<style>:root{color-scheme:light dark;--bg:#fafaf9;--fg:#1c1917;--dim:#78716c;--line:#e7e5e4;--acc:#dc2626}\
