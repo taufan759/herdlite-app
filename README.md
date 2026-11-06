@@ -74,7 +74,7 @@ hl which-php            hl php:list   hl php:available   hl php:install 8.4   hl
 hl composer:install     hl laravel:install     # composer + `laravel new`
 hl node:install 26      hl node:install lts    hl node:use 24   hl node:list   # pengganti nvm Herd
 hl doctor               # cek apa yang masih bergantung pada Herd
-hl setup                hl shortcut [--desktop]
+hl setup                hl shortcut [--desktop]   hl lock   hl ca:renew
 hl secure [nama|--all]  hl unsecure [nama|--all]   hl trust   hl untrust
 hl hosts                hl hosts sync          # sync: jalankan dari terminal Administrator
 hl config [kunci [nilai]]                      # mis. hl config http_port 8080
@@ -126,6 +126,38 @@ Dashboard (hanya baca) tersedia di `http://herdlite.test`: daftar situs, versi P
    Semuanya aman dihapus setelah `hl doctor` ✓. Bagian PATH sistem, variabel, dan hosts butuh admin.
 
 Paket npm global yang terpasang di Node milik Herd **tidak** ikut pindah. Pasang ulang dengan `npm i -g …` setelah langkah 4.
+
+## Keamanan
+
+herdlite sudah melewati review keamanan independen dan uji serangan langsung (November 2026).
+
+**Jaringan**
+- Server dan php-cgi hanya mendengar di `127.0.0.1`, jadi tidak bisa diakses dari WiFi/LAN.
+- Host selain `*.<tld>`, `localhost`, dan IP ditolak (404), sehingga serangan DNS rebinding dari website jahat tidak sampai ke situs.
+
+**Path**
+- Ditolak: `..` (juga versi ter-encode `%2e%2e` dan `%5c`), `:` (alternate data stream), karakter kontrol, serta titik/spasi di akhir nama (`index.php.`).
+- File statis diputuskan dari nama aslinya di disk, sehingga file `.php` tidak pernah terkirim sebagai teks. File di dalam folder tersembunyi (`.env`, `.git`, termasuk lewat nama pendek 8.3) ditolak.
+- Nama situs harus label DNS yang sah, sehingga Host seperti `...test` tidak bisa keluar dari folder park.
+
+**hosts file**
+- Proses yang dinaikkan lewat UAC hanya mau menulis TLD lokal (`test`, `localhost`, `local`, `wip`) ke alamat `127.x`, dengan nama yang divalidasi.
+- Alat Windows selalu dipanggil dari `System32` lewat path lengkap.
+
+**Izin folder**
+- `hl setup` / `hl lock` mematikan pewarisan izin dari drive. Hanya akunmu, SYSTEM, dan Administrators yang bisa menulis; kunci CA hanya bisa dibaca akunmu.
+
+**HTTPS**
+- CA dibatasi untuk `.<tld>` dan `localhost`, semua alamat IP dilarang, dan hanya untuk server web (bukan email atau code signing).
+- Sertifikat hanya diterbitkan untuk `*.<tld>`/`localhost`, dan cache-nya dibatasi.
+- CA yang dibuat sebelum versi ini cukup dibatasi DNS saja; ganti dengan `hl ca:renew`.
+
+**Unduhan**
+- PHP, Node, dan Composer diverifikasi SHA-256, hanya lewat HTTPS (redirect ke HTTP ditolak).
+
+**Batasan yang diketahui** (sama seperti Herd/Valet):
+- Port FastCGI php-cgi (`127.0.0.1:92xx`) bisa dihubungi proses lain di komputer yang sama, dan proses seperti itu bisa menjalankan file PHP sebagai akunmu. Browser tidak bisa melakukannya.
+- Situs tanpa folder `public\` memakai root proyek sebagai document root, sehingga file seperti `composer.json` atau `storage\logs` ikut bisa dibuka lewat browser di komputer ini.
 
 ## Konfigurasi (`config.json`)
 
