@@ -4,7 +4,7 @@
 //! walaupun file kuncinya bocor, CA ini tidak bisa dipakai memalsukan situs lain.
 
 use rcgen::{
-    BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType,
+    BasicConstraints, Certificate, CertificateParams, CidrSubnet, DistinguishedName, DnType,
     ExtendedKeyUsagePurpose, GeneralSubtree, IsCa, KeyPair, KeyUsagePurpose, NameConstraints,
     SanType,
 };
@@ -39,12 +39,18 @@ fn ca_params(cn: &str, tld: &str) -> CertificateParams {
     p.distinguished_name = dn;
     p.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
     p.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign, KeyUsagePurpose::DigitalSignature];
+    // Hanya untuk sertifikat server web (bukan email/S-MIME atau code signing).
+    p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     p.name_constraints = Some(NameConstraints {
         permitted_subtrees: vec![
             GeneralSubtree::DnsName(tld.to_string()),
             GeneralSubtree::DnsName("localhost".into()),
         ],
-        excluded_subtrees: vec![],
+        // Semua alamat IP dilarang, supaya CA ini tidak bisa dipakai untuk https://192.168.x.x dll.
+        excluded_subtrees: vec![
+            GeneralSubtree::IpAddress(CidrSubnet::V4([0; 4], [0; 4])),
+            GeneralSubtree::IpAddress(CidrSubnet::V6([0; 16], [0; 16])),
+        ],
     });
     let now = OffsetDateTime::now_utc();
     p.not_before = now - Duration::days(1);
@@ -118,9 +124,13 @@ impl Ca {
 
 pub struct Resolver {
     ca: Ca,
+    tld: String,
     provider: Arc<CryptoProvider>,
     cache: Mutex<HashMap<String, Arc<CertifiedKey>>>,
 }
+
+/// Batas jumlah sertifikat di memori (mencegah halaman web memaksa ribuan nama).
+const CACHE_MAX: usize = 256;
 
 impl std::fmt::Debug for Resolver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -130,7 +140,11 @@ impl std::fmt::Debug for Resolver {
 
 impl ResolvesServerCert for Resolver {
     fn resolve(&self, hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        let name = hello.server_name().unwrap_or("localhost").to_ascii_lowercase();
+        let mut name = hello.server_name().unwrap_or("localhost").to_ascii_lowercase();
+        // Hanya terbitkan untuk *.<tld> dan localhost; nama lain dapat sertifikat localhost.
+        if name != "localhost" && !name.ends_with(&format!(".{}", self.tld)) {
+            name = "localhost".into();
+        }
         if let Some(c) = self.cache.lock().ok()?.get(&name) {
             return Some(c.clone());
         }
@@ -141,14 +155,18 @@ impl ResolvesServerCert for Resolver {
             .load_private_key(PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)))
             .ok()?;
         let ck = Arc::new(CertifiedKey::new(vec![CertificateDer::from(cert)], signing));
-        self.cache.lock().ok()?.insert(name, ck.clone());
+        let mut cache = self.cache.lock().ok()?;
+        if cache.len() >= CACHE_MAX {
+            cache.clear();
+        }
+        cache.insert(name, ck.clone());
         Some(ck)
     }
 }
 
-pub fn server_config(ca: Ca) -> Result<rustls::ServerConfig, String> {
+pub fn server_config(ca: Ca, tld: &str) -> Result<rustls::ServerConfig, String> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let resolver = Resolver { ca, provider: provider.clone(), cache: Mutex::new(HashMap::new()) };
+    let resolver = Resolver { ca, tld: tld.to_string(), provider: provider.clone(), cache: Mutex::new(HashMap::new()) };
     let mut cfg = rustls::ServerConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|e| e.to_string())?

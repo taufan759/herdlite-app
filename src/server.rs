@@ -124,7 +124,7 @@ async fn serve(home: PathBuf) -> Result<(), String> {
         .map_err(|e| format!("gagal membuka port HTTP {}:{}: {e}", cfg.bind, cfg.http_port))?;
     let https = if cfg.https_port != 0 {
         let (ca, _) = crate::tls::Ca::load_or_create(&home, &cfg.tld)?;
-        let tls = crate::tls::server_config(ca)?;
+        let tls = crate::tls::server_config(ca, &cfg.tld)?;
         let l = TcpListener::bind((cfg.bind.as_str(), cfg.https_port))
             .await
             .map_err(|e| format!("gagal membuka port HTTPS {}:{}: {e}", cfg.bind, cfg.https_port))?;

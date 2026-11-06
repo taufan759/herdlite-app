@@ -55,6 +55,7 @@ HTTPS:
   hl unsecure [nama] | hl unsecure --all
   hl trust                      percayakan CA herdlite (CurrentUser\Root, ada dialog konfirmasi Windows)
   hl untrust
+  hl ca:renew                   buat ulang CA HTTPS dengan batasan terbaru (2 dialog Windows)
 
 Lain-lain:
   hl hosts                      cek nama .test yang belum ada di hosts file
@@ -392,6 +393,25 @@ fn run(args: Vec<String>) -> Result<i32, String> {
                 return Err("certutil gagal".into());
             }
             println!("✓ CA herdlite dihapus dari CurrentUser\\Root");
+        }
+        "ca:renew" => {
+            // Buat CA baru (dengan batasan terbaru) lalu ganti yang lama di store Windows.
+            println!("Mengganti CA herdlite. Windows akan menampilkan dua dialog: hapus CA lama, lalu pasang CA baru. Klik Yes pada keduanya.");
+            let was_running = running_pid(&home).is_some();
+            stop(&home, false);
+            let _ = Command::new(win::sys("certutil.exe"))
+                .args(["-user", "-delstore", "Root", &tls::ca_name()])
+                .stdout(Stdio::null())
+                .status();
+            let dir = tls::cert_dir(&home);
+            for f in ["herdlite-ca.crt", "herdlite-ca.key", "herdlite-ca.json"] {
+                let _ = std::fs::remove_file(dir.join(f));
+            }
+            trust_ca(&home, &cfg)?;
+            if was_running {
+                start(&home, &cfg)?;
+            }
+            println!("✓ CA baru aktif (khusus .{} dan localhost, tanpa alamat IP, hanya untuk server web)", cfg.tld);
         }
 
         "hosts" => {
