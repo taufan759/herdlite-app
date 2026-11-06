@@ -1,13 +1,48 @@
 # herdlite
 
-Pengganti **Laravel Herd** yang sangat ringan untuk Windows. Cara pakainya mirip Herd/Valet:
+Server PHP lokal yang **ringan dan gampang** untuk Windows, pengganti XAMPP, Laragon, dan Laravel Herd. Cocok untuk belajar PHP/Laravel maupun kerja harian.
 
-- situs dibuka lewat `http://<folder>.test`
-- **park** folder (setiap subfolder otomatis jadi situs) dan **link** satu folder
-- versi PHP **global** dan **per situs** (`isolate`)
-- **HTTPS lokal** dengan HTTP/2 dan sertifikat yang dibuat otomatis per situs
+- Setiap folder proyek langsung bisa dibuka di `http://<nama-folder>.test`, tanpa mengatur virtual host
+- Versi PHP bisa dipilih **per situs** (7.4 sampai 8.5), cukup klik di dashboard
+- HTTPS lokal (`https://<nama>.test`) tanpa peringatan sertifikat
+- Saat tidak dipakai hanya memakan **±1 MB RAM**; programnya cuma **2,5 MB**
 
-Bedanya, herdlite tidak memakai Electron, nginx, Node, atau layanan Windows. Isinya dua exe kecil ditambah PHP resmi dari windows.php.net.
+## Pasang (untuk pemula)
+
+1. Unduh **`herdlite-setup-<versi>.exe`** dari halaman [Releases](https://github.com/taufan759/herdlite-app/releases/latest).
+2. Jalankan file itu. Kalau muncul layar biru **"Windows protected your PC"**, klik **More info → Run anyway**. Ini muncul karena installer belum ditandatangani sertifikat berbayar, bukan karena berbahaya. Kode lengkapnya ada di repo ini.
+3. Klik **Lanjut** sampai selesai. Kamu akan diminta memilih **folder proyek** (default `C:\Users\<nama>\Sites`).
+4. Di akhir muncul **dua dialog Windows**. Klik **Yes** pada keduanya:
+   - *Security Warning*: memasang sertifikat HTTPS lokal herdlite
+   - *Izin perubahan (UAC)*: mendaftarkan nama `.test` di Windows
+5. Dashboard terbuka otomatis, dan contoh situs **http://halo.test** sudah siap.
+
+Setelah itu herdlite menyala sendiri setiap kali Windows login. Kapan saja, buka **herdlite** dari Start Menu untuk melihat dashboard.
+
+> Butuh internet saat memasang: installer mengunduh PHP resmi dari windows.php.net (±30 MB), Composer, dan (opsional) Node.js. Semua unduhan dicek checksum SHA-256-nya.
+
+## Mulai belajar
+
+- **Situs baru:** di dashboard, ketik nama (mis. `belajar`) lalu klik **Buat**. Bisa juga cukup membuat folder baru di folder proyek. Untuk situs baru, klik sekali **Daftarkan sekarang**, lalu buka `http://belajar.test`.
+- **Ubah kode:** klik **Folder** di samping situs, edit `index.php` dengan editor favoritmu (VS Code, Notepad++), lalu refresh browser.
+- **Ganti versi PHP:** pilih di kolom PHP pada dashboard. Versi lain bisa dipasang dari bagian *Versi PHP*.
+- **Laravel:** klik **Terminal** di folder proyek, jalankan `laravel new toko`, lalu buka `http://toko.test`.
+- **Database:** herdlite tidak menyertakan MySQL supaya tetap ringan. Pasang MySQL/MariaDB terpisah (mis. [DBngin](https://dbngin.com) atau MariaDB), lalu sambungkan ke `127.0.0.1:3306`. Untuk belajar, Laravel juga bisa langsung memakai SQLite tanpa server apa pun.
+
+## Dibanding XAMPP, Laragon, dan Herd
+
+| | XAMPP | Laragon | Laravel Herd | **herdlite** |
+|---|---|---|---|---|
+| Ukuran terpasang | ratusan MB | ratusan MB | ±2,7 GB (diukur) | **±100 MB** (1 PHP + Composer) |
+| Saat tidak dipakai | Apache/MySQL tetap jalan bila dinyalakan | server tetap jalan bila dinyalakan | ±980 MB RAM (diukur) | **±1 MB RAM** |
+| Domain `nama.test` otomatis | ✗ (atur vhost manual) | ✓ | ✓ | ✓ |
+| Versi PHP berbeda per situs | ✗ | ✗ (ganti versi global) | ✓ | ✓ |
+| HTTPS lokal | manual | ✓ | ✓ | ✓ |
+| Database bawaan | ✓ MySQL/MariaDB | ✓ MySQL | versi Pro (berbayar) | ✗ (pasang terpisah) |
+
+Angka "diukur" berasal dari laptop yang sama (lihat bagian berikut). Kolom XAMPP dan Laragon berisi gambaran umum, bukan hasil ukur.
+
+## Perbandingan terukur dengan Laravel Herd
 
 | | Laravel Herd 2.0.3 | herdlite 0.1 |
 |---|---|---|
@@ -36,7 +71,7 @@ browser ──▶ herdlited.exe (Rust: hyper + rustls, 1 proses, ~1 MB RAM)
 - **HTTPS:** herdlite membuat CA lokal sekali (`<home>\certs`). Sertifikat tiap situs dibuat di memori saat browser pertama kali meminta (SNI), dengan SAN `situs.test` dan `*.situs.test`. CA diberi *name constraints* sehingga **hanya sah untuk `.test` dan `localhost`**. Kalau file kuncinya bocor pun, CA ini tidak bisa dipakai memalsukan situs lain.
 - **Aman kalau crash:** herdlited memasukkan dirinya ke Job Object *kill-on-close*. Kalau server mati atau dibunuh, semua php-cgi ikut mati.
 
-## Instalasi
+## Build dari source (untuk developer)
 
 Butuh Rust (MSVC) untuk build. Windows 10/11 sudah menyertakan `curl.exe` dan `tar.exe`, yang dipakai untuk mengunduh PHP.
 
@@ -48,15 +83,19 @@ D:\DevTools\herdlite\bin\hl.exe setup                    # sisanya otomatis
 
 `hl setup` mengerjakan semuanya dan melewati langkah yang sudah beres:
 
-1. memasang PHP 8.3, Composer, dan Laravel installer kalau belum ada
+1. memasang PHP (8.3, atau terbaru dengan `--php=latest`), Composer, dan Laravel installer kalau belum ada
 2. memasang Node LTS kalau belum ada
 3. mengatur PATH user
-4. memindahkan server ke port 80/443 kalau port itu kosong, lalu menyalakannya
+4. memakai port 80/443; kalau dipakai XAMPP/Laragon/IIS, otomatis pindah ke 8080/8443 dst., lalu menyalakan server
 5. mempercayakan CA HTTPS (ada dialog Windows, klik Yes)
 6. menulis hosts (ada jendela UAC, klik Yes)
 7. menyalakan autostart dan membuat shortcut **herdlite** di Start Menu
 
-Di akhir, `hl doctor` ditampilkan.
+Di akhir, `hl doctor` ditampilkan. Installer memakai perintah yang sama: `hl setup --installer --php=latest --sites=<folder>`.
+
+Membuat installer: `powershell -ExecutionPolicy Bypass -File installeruild.ps1` (butuh [Inno Setup 6](https://jrsoftware.org/isdl.php)). Setiap tag `v*` juga membuat installer otomatis lewat GitHub Actions dan mengunggahnya ke Releases.
+
+Menghapus: Settings → Apps → herdlite → Uninstall (atau `hl uninstall`). Autostart, shortcut, PATH, sertifikat, dan entri hosts dibersihkan; **folder proyek tidak pernah dihapus**.
 
 Setelah itu cara pakainya seperti Herd: server menyala sendiri saat login (RAM menganggur ± 1 MB). Kalau dimatikan, buka **herdlite** dari Start Menu; server menyala dan dashboard terbuka.
 
