@@ -165,7 +165,7 @@ pub fn use_version(home: &Path, spec: &str) -> Result<String, String> {
         fs::remove_dir(&link).map_err(|e| format!("gagal mengganti {}: {e}", link.display()))?;
     }
     let target = node_root(home).join(&ver);
-    let out = Command::new("cmd")
+    let out = Command::new(crate::win::sys("cmd.exe"))
         .args(["/C", "mklink", "/J"])
         .arg(&link)
         .arg(&target)

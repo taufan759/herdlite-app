@@ -8,6 +8,18 @@ pub const DETACHED_PROCESS: u32 = 0x0000_0008;
 pub const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 pub const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
 
+/// Path lengkap alat bawaan Windows (System32), supaya tidak bisa "dibajak" oleh exe
+/// bernama sama di folder herdlite, folder kerja, atau PATH.
+pub fn sys(name: &str) -> std::path::PathBuf {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let sys32 = std::path::PathBuf::from(root).join("System32");
+    if name.eq_ignore_ascii_case("powershell.exe") {
+        sys32.join("WindowsPowerShell").join("v1.0").join("powershell.exe")
+    } else {
+        sys32.join(name)
+    }
+}
+
 /// Apakah proses dengan PID ini masih hidup?
 pub fn pid_alive(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
@@ -31,7 +43,7 @@ pub fn pid_alive(pid: u32) -> bool {
 
 /// Matikan proses beserta anak-anaknya.
 pub fn kill_tree(pid: u32) {
-    let _ = Command::new("taskkill")
+    let _ = Command::new(sys("taskkill.exe"))
         .args(["/PID", &pid.to_string(), "/T", "/F"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -85,7 +97,7 @@ pub fn no_inherit_std_handles() {
 
 /// Cari nama proses yang sedang LISTEN di port TCP tertentu (untuk pesan error).
 pub fn port_owner(port: u16) -> Option<String> {
-    let out = Command::new("netstat")
+    let out = Command::new(sys("netstat.exe"))
         .args(["-ano", "-p", "TCP"])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
@@ -100,7 +112,7 @@ pub fn port_owner(port: u16) -> Option<String> {
             None
         }
     })?;
-    let out = Command::new("tasklist")
+    let out = Command::new(sys("tasklist.exe"))
         .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
         .creation_flags(CREATE_NO_WINDOW)
         .output()

@@ -63,7 +63,7 @@ pub fn dashboard_url(cfg: &Config) -> String {
 /// Buka URL di browser bawaan.
 pub fn open_url(url: &str) {
     use std::os::windows::process::CommandExt;
-    let _ = std::process::Command::new("rundll32")
+    let _ = std::process::Command::new(crate::win::sys("rundll32.exe"))
         .args(["url.dll,FileProtocolHandler", url])
         .creation_flags(crate::win::CREATE_NO_WINDOW)
         .spawn();

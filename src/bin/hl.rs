@@ -241,7 +241,7 @@ fn run(args: Vec<String>) -> Result<i32, String> {
                 },
             };
             println!("Membuka {url}");
-            let _ = Command::new("rundll32").args(["url.dll,FileProtocolHandler", &url]).spawn();
+            let _ = Command::new(win::sys("rundll32.exe")).args(["url.dll,FileProtocolHandler", &url]).spawn();
         }
 
         "use" => {
@@ -387,7 +387,7 @@ fn run(args: Vec<String>) -> Result<i32, String> {
         }
         "trust" => trust_ca(&home, &cfg)?,
         "untrust" => {
-            let st = Command::new("certutil").args(["-user", "-delstore", "Root", &tls::ca_name()]).status().map_err(|e| e.to_string())?;
+            let st = Command::new(win::sys("certutil.exe")).args(["-user", "-delstore", "Root", &tls::ca_name()]).status().map_err(|e| e.to_string())?;
             if !st.success() {
                 return Err("certutil gagal".into());
             }
@@ -461,7 +461,7 @@ fn run(args: Vec<String>) -> Result<i32, String> {
 }
 
 fn run_quiet(prog: &str, args: &[&str]) -> Result<(), String> {
-    let out = Command::new(prog).args(args).output().map_err(|e| e.to_string())?;
+    let out = Command::new(win::sys(&format!("{prog}.exe"))).args(args).output().map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(())
     } else {
@@ -470,7 +470,7 @@ fn run_quiet(prog: &str, args: &[&str]) -> Result<(), String> {
 }
 
 fn ca_trusted() -> bool {
-    Command::new("certutil")
+    Command::new(win::sys("certutil.exe"))
         .args(["-user", "-verifystore", "Root", &tls::ca_name()])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -651,7 +651,7 @@ fn from_herd(p: &Path) -> bool {
 }
 
 fn where_first(cmd: &str) -> Option<PathBuf> {
-    let out = Command::new("where.exe").arg(cmd).stderr(Stdio::null()).output().ok()?;
+    let out = Command::new(win::sys("where.exe")).arg(cmd).stderr(Stdio::null()).output().ok()?;
     String::from_utf8_lossy(&out.stdout).lines().next().map(|l| PathBuf::from(l.trim())).filter(|p| !p.as_os_str().is_empty())
 }
 
@@ -703,7 +703,7 @@ fn doctor(home: &Path, cfg: &Config) {
         println!("! port HTTP herdlite : {} (bukan 80) → setelah Herd ditutup: hl config http_port 80 && hl config https_port 443 && hl restart", cfg.http_port);
     }
     println!("{} CA HTTPS dipercaya  : {}", mark(ca_trusted()), if ca_trusted() { "ya" } else { "belum → hl trust" });
-    let herd_running = Command::new("tasklist")
+    let herd_running = Command::new(win::sys("tasklist.exe"))
         .args(["/FI", "IMAGENAME eq Herd.exe", "/NH"])
         .creation_flags(win::CREATE_NO_WINDOW)
         .output()
@@ -720,7 +720,7 @@ fn trust_ca(home: &Path, cfg: &Config) -> Result<(), String> {
     }
     let crt = tls::ca_crt_path(home);
     println!("Memasang {} ke CurrentUser\\Root (klik Yes pada dialog Windows)…", crt.display());
-    let st = Command::new("certutil")
+    let st = Command::new(win::sys("certutil.exe"))
         .args(["-user", "-addstore", "Root"])
         .arg(&crt)
         .stdout(Stdio::null())
@@ -748,7 +748,7 @@ fn hosts_sync(cfg: &Config, elevated: bool) -> Result<(), String> {
                 "try {{ $p = Start-Process -FilePath '{}' -ArgumentList 'hosts','sync','--elevated' -Verb RunAs -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode }} catch {{ exit 1223 }}",
                 me.display().to_string().replace('\'', "''")
             );
-            let st = Command::new("powershell").args(["-NoProfile", "-Command", &ps]).status().map_err(|e| e.to_string())?;
+            let st = Command::new(win::sys("powershell.exe")).args(["-NoProfile", "-Command", &ps]).status().map_err(|e| e.to_string())?;
             if st.code() == Some(1223) {
                 return Err("dibatalkan di jendela UAC".into());
             }
@@ -773,7 +773,7 @@ fn path_add(home: &Path) -> Result<(), String> {
          $rest=@($p -split ';' | Where-Object {{ $_ -and ($add -notcontains $_) }}); \
          [Environment]::SetEnvironmentVariable('Path', (($add + $rest) -join ';'), 'User'); 'ok'"
     );
-    let out = Command::new("powershell").args(["-NoProfile", "-Command", &ps]).output().map_err(|e| e.to_string())?;
+    let out = Command::new(win::sys("powershell.exe")).args(["-NoProfile", "-Command", &ps]).output().map_err(|e| e.to_string())?;
     if String::from_utf8_lossy(&out.stdout).trim() != "ok" {
         return Err(format!("gagal mengubah PATH: {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
@@ -812,7 +812,7 @@ fn shortcut(home: &Path, desktop: bool) -> Result<(), String> {
             exe = exe.display().to_string().replace('\'', "''"),
             home = home.display().to_string().replace('\'', "''"),
         );
-        let out = Command::new("powershell").args(["-NoProfile", "-Command", &ps]).output().map_err(|e| e.to_string())?;
+        let out = Command::new(win::sys("powershell.exe")).args(["-NoProfile", "-Command", &ps]).output().map_err(|e| e.to_string())?;
         if !out.status.success() {
             return Err(format!("gagal membuat shortcut: {}", String::from_utf8_lossy(&out.stderr).trim()));
         }
@@ -928,7 +928,7 @@ fn lock_permissions(home: &Path) -> Result<(), String> {
         args.extend(["*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", full.as_str()].iter().map(|s| s.to_string()));
         args.extend(extra.iter().map(|s| s.to_string()));
         args.push("/Q".into());
-        let out = Command::new("icacls").args(&args).output().map_err(|e| e.to_string())?;
+        let out = Command::new(win::sys("icacls.exe")).args(&args).output().map_err(|e| e.to_string())?;
         if out.status.success() {
             Ok(())
         } else {
