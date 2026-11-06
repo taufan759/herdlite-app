@@ -54,7 +54,7 @@ HTTPS:
 
 Lain-lain:
   hl hosts                      cek nama .test yang belum ada di hosts file
-  hl hosts sync                 tulis blok herdlite ke hosts (jalankan dari terminal Administrator)
+  hl hosts sync                 tulis blok herdlite ke hosts (muncul jendela UAC, klik Yes)
   hl import-herd [--use-herd-php]    salin pengaturan park/link/isolate dari Herd (Herd tidak diubah)
   hl config [kunci [nilai]]     lihat / ubah config.json (mis. hl config http_port 8080)
   hl doctor                     cek kesiapan pindah dari Herd (php/composer/node/hosts/port)
@@ -376,16 +376,7 @@ fn run(args: Vec<String>) -> Result<i32, String> {
                 }
             }
         }
-        "trust" => {
-            let (_, _) = tls::Ca::load_or_create(&home, &cfg.tld)?;
-            let crt = tls::ca_crt_path(&home);
-            println!("Memasang {} ke CurrentUser\\Root (Windows akan menampilkan dialog konfirmasi)…", crt.display());
-            let st = Command::new("certutil").args(["-user", "-addstore", "Root"]).arg(&crt).status().map_err(|e| e.to_string())?;
-            if !st.success() {
-                return Err("certutil gagal / dibatalkan".into());
-            }
-            println!("✓ CA dipercaya. Chrome/Edge langsung ikut; Firefox: aktifkan security.enterprise_roots.enabled.");
-        }
+        "trust" => trust_ca(&home, &cfg)?,
         "untrust" => {
             let st = Command::new("certutil").args(["-user", "-delstore", "Root", &tls::ca_name()]).status().map_err(|e| e.to_string())?;
             if !st.success() {
@@ -396,8 +387,7 @@ fn run(args: Vec<String>) -> Result<i32, String> {
 
         "hosts" => {
             if pos.first().map(|s| s.as_str()) == Some("sync") {
-                let n = hosts::sync(&cfg)?;
-                println!("✓ hosts diperbarui ({n} nama .{} → {})", cfg.tld, cfg.bind);
+                hosts_sync(&cfg, flag(&rest, "--elevated"))?;
             } else {
                 let miss = hosts::missing(&cfg)?;
                 if miss.is_empty() {
@@ -407,7 +397,7 @@ fn run(args: Vec<String>) -> Result<i32, String> {
                     for h in &miss {
                         println!("  {h}");
                     }
-                    println!("Jalankan dari terminal Administrator: hl hosts sync");
+                    println!("Jalankan: hl hosts sync  (akan muncul jendela UAC, klik Yes)");
                 }
             }
         }
@@ -447,40 +437,12 @@ fn run(args: Vec<String>) -> Result<i32, String> {
                 }
             }
         }
-        "path:add" => {
-            // Taruh di depan PATH user supaya php/composer/node milik herdlite yang dipakai.
-            let dirs = [home.join("bin"), node::current_link(&home)];
-            let list = dirs.iter().map(|d| format!("'{}'", d.display())).collect::<Vec<_>>().join(",");
-            let ps = format!(
-                "$add=@({list}); $p=[Environment]::GetEnvironmentVariable('Path','User'); if(-not $p){{$p=''}}; \
-                 $rest=@($p -split ';' | Where-Object {{ $_ -and ($add -notcontains $_) }}); \
-                 [Environment]::SetEnvironmentVariable('Path', (($add + $rest) -join ';'), 'User'); 'ok'"
-            );
-            let out = Command::new("powershell").args(["-NoProfile", "-Command", &ps]).output().map_err(|e| e.to_string())?;
-            if String::from_utf8_lossy(&out.stdout).trim() != "ok" {
-                return Err(format!("gagal mengubah PATH: {}", String::from_utf8_lossy(&out.stderr).trim()));
-            }
-            for d in &dirs {
-                println!("✓ {} ada di depan PATH user", d.display());
-            }
-            println!("  Buka terminal baru supaya berlaku.");
-            println!("  Catatan: selama Herd masih terpasang, PATH sistem milik Herd (Node di C:\\Program Files\\nodejs) tetap didahulukan Windows.");
-        }
-        "autostart" => {
-            let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-            match pos.first().map(|s| s.as_str()) {
-                Some("on") => {
-                    let exe = daemon_exe()?;
-                    run_quiet("reg", &["add", key, "/v", "herdlite", "/t", "REG_SZ", "/d", &format!("\"{}\"", exe.display()), "/f"])?;
-                    println!("✓ herdlite akan menyala otomatis saat login");
-                }
-                Some("off") => {
-                    let _ = run_quiet("reg", &["delete", key, "/v", "herdlite", "/f"]);
-                    println!("✓ autostart dimatikan");
-                }
-                _ => return Err("pakai: hl autostart on|off".into()),
-            }
-        }
+        "path:add" => path_add(&home)?,
+        "autostart" => match pos.first().map(|s| s.as_str()) {
+            Some("on") => autostart(true)?,
+            Some("off") => autostart(false)?,
+            _ => return Err("pakai: hl autostart on|off".into()),
+        },
         other => return Err(format!("perintah tidak dikenal: {other}  (lihat: hl help)")),
     }
     Ok(0)
@@ -517,7 +479,7 @@ fn target_site(cfg: &Config, rest: &[String]) -> Result<String, String> {
 fn hosts_hint(cfg: &Config) {
     if let Ok(m) = hosts::missing(cfg) {
         if !m.is_empty() {
-            println!("  ! {} nama .{} belum ada di hosts file. Jalankan dari terminal Administrator: hl hosts sync", m.len(), cfg.tld);
+            println!("  ! {} nama .{} belum ada di hosts file. Jalankan: hl hosts sync (klik Yes pada UAC)", m.len(), cfg.tld);
         }
     }
 }
@@ -708,7 +670,7 @@ fn doctor(home: &Path, cfg: &Config) {
     println!("\nLain-lain:");
     match hosts::missing(cfg) {
         Ok(m) if m.is_empty() => println!("✓ hosts file        : semua nama .{} sudah ada", cfg.tld),
-        Ok(m) => println!("✗ hosts file        : {} nama belum ada → hl hosts sync (terminal Administrator)", m.len()),
+        Ok(m) => println!("✗ hosts file        : {} nama belum ada → hl hosts sync (klik Yes pada UAC)", m.len()),
         Err(e) => println!("✗ hosts file        : {e}"),
     }
     for (label, port) in [("port HTTP ", cfg.http_port), ("port HTTPS", cfg.https_port)] {
@@ -736,4 +698,89 @@ fn doctor(home: &Path, cfg: &Config) {
         .map(|o| String::from_utf8_lossy(&o.stdout).contains("Herd.exe"))
         .unwrap_or(false);
     println!("{} Herd               : {}", mark(!herd_running), if herd_running { "masih berjalan" } else { "tidak berjalan" });
+}
+
+fn trust_ca(home: &Path, cfg: &Config) -> Result<(), String> {
+    tls::Ca::load_or_create(home, &cfg.tld)?;
+    if ca_trusted() {
+        println!("✓ CA herdlite sudah dipercaya");
+        return Ok(());
+    }
+    let crt = tls::ca_crt_path(home);
+    println!("Memasang {} ke CurrentUser\\Root (klik Yes pada dialog Windows)…", crt.display());
+    let st = Command::new("certutil")
+        .args(["-user", "-addstore", "Root"])
+        .arg(&crt)
+        .stdout(Stdio::null())
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !st.success() || !ca_trusted() {
+        return Err("certutil gagal / dibatalkan".into());
+    }
+    println!("✓ CA dipercaya. Chrome/Edge langsung ikut; Firefox: aktifkan security.enterprise_roots.enabled.");
+    Ok(())
+}
+
+/// Tulis hosts. Kalau bukan Administrator, minta izin lewat jendela UAC
+/// (proses hl kedua yang ter-elevasi), lalu periksa hasilnya.
+fn hosts_sync(cfg: &Config, elevated: bool) -> Result<(), String> {
+    match hosts::sync(cfg) {
+        Ok(n) => {
+            println!("✓ hosts diperbarui ({n} nama .{} → {})", cfg.tld, cfg.bind);
+            Ok(())
+        }
+        Err(e) if !elevated && e.starts_with("butuh hak Administrator") => {
+            println!("Meminta izin Administrator untuk menulis hosts (klik Yes pada jendela UAC)…");
+            let me = std::env::current_exe().map_err(|e| e.to_string())?;
+            let ps = format!(
+                "try {{ $p = Start-Process -FilePath '{}' -ArgumentList 'hosts','sync','--elevated' -Verb RunAs -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode }} catch {{ exit 1223 }}",
+                me.display().to_string().replace('\'', "''")
+            );
+            let st = Command::new("powershell").args(["-NoProfile", "-Command", &ps]).status().map_err(|e| e.to_string())?;
+            if st.code() == Some(1223) {
+                return Err("dibatalkan di jendela UAC".into());
+            }
+            let miss = hosts::missing(cfg)?;
+            if miss.is_empty() {
+                println!("✓ hosts diperbarui ({} nama .{})", hosts::wanted(cfg).len(), cfg.tld);
+                Ok(())
+            } else {
+                Err(format!("hosts belum lengkap, {} nama belum ada", miss.len()))
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn path_add(home: &Path) -> Result<(), String> {
+    // Taruh di depan PATH user supaya php/composer/node milik herdlite yang dipakai.
+    let dirs = [home.join("bin"), node::current_link(home)];
+    let list = dirs.iter().map(|d| format!("'{}'", d.display())).collect::<Vec<_>>().join(",");
+    let ps = format!(
+        "$add=@({list}); $p=[Environment]::GetEnvironmentVariable('Path','User'); if(-not $p){{$p=''}}; \
+         $rest=@($p -split ';' | Where-Object {{ $_ -and ($add -notcontains $_) }}); \
+         [Environment]::SetEnvironmentVariable('Path', (($add + $rest) -join ';'), 'User'); 'ok'"
+    );
+    let out = Command::new("powershell").args(["-NoProfile", "-Command", &ps]).output().map_err(|e| e.to_string())?;
+    if String::from_utf8_lossy(&out.stdout).trim() != "ok" {
+        return Err(format!("gagal mengubah PATH: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    for d in &dirs {
+        println!("✓ {} ada di depan PATH user", d.display());
+    }
+    println!("  Buka terminal baru supaya berlaku.");
+    Ok(())
+}
+
+fn autostart(on: bool) -> Result<(), String> {
+    let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+    if on {
+        let exe = daemon_exe()?;
+        run_quiet("reg", &["add", key, "/v", "herdlite", "/t", "REG_SZ", "/d", &format!("\"{}\"", exe.display()), "/f"])?;
+        println!("✓ herdlite menyala otomatis saat login");
+    } else {
+        let _ = run_quiet("reg", &["delete", key, "/v", "herdlite", "/f"]);
+        println!("✓ autostart dimatikan");
+    }
+    Ok(())
 }
