@@ -262,6 +262,24 @@ fn port_suffix(https: bool, cfg: &Config) -> String {
     if p == d { String::new() } else { format!(":{p}") }
 }
 
+/// Nama file asli di disk (setelah alias seperti nama pendek 8.3 diselesaikan).
+fn real_name(p: &Path) -> Option<String> {
+    let c = std::fs::canonicalize(p).ok()?;
+    c.file_name().map(|n| n.to_string_lossy().to_string())
+}
+
+/// Apakah file ini (menurut path aslinya di disk) berada di dalam folder/berkas tersembunyi
+/// di bawah docroot? Menangkap alias seperti nama pendek 8.3 (GIT~1 → .git, ENV~1 → .env).
+fn hidden_on_disk(docroot: &Path, target: &Path) -> bool {
+    let Ok(real) = std::fs::canonicalize(target) else { return false };
+    let hidden = |s: &str| s.starts_with('.') && s != ".well-known";
+    match std::fs::canonicalize(docroot).ok().and_then(|r| real.strip_prefix(&r).ok().map(|p| p.to_path_buf())) {
+        Some(rel) => rel.components().any(|c| hidden(&c.as_os_str().to_string_lossy())),
+        // Di luar docroot (lewat symlink, mis. public/storage): cukup cek nama filenya.
+        None => real.file_name().map(|n| hidden(&n.to_string_lossy())).unwrap_or(false),
+    }
+}
+
 fn join(base: &Path, segs: &[&str]) -> PathBuf {
     let mut p = base.to_path_buf();
     for s in segs {
@@ -291,7 +309,15 @@ async fn serve_site(
         if s.is_empty() || s == "." {
             continue;
         }
-        if s == ".." || s.contains('\\') || s.contains(':') || s.contains('\0') {
+        // Windows membuang titik/spasi di akhir nama ("index.php." == "index.php"),
+        // jadi segmen seperti itu ditolak supaya file .php tidak terkirim sebagai teks.
+        if s == ".."
+            || s.contains('\\')
+            || s.contains(':')
+            || s.chars().any(|c| c.is_control())
+            || s.ends_with('.')
+            || s.ends_with(' ')
+        {
             return simple(400, "Bad Request", "Path tidak valid.");
         }
         segs.push(s);
@@ -322,6 +348,15 @@ async fn serve_site(
     if script.is_none() {
         let target = join(&docroot, &segs);
         if !segs.is_empty() && target.is_file() {
+            // Putuskan dari nama file yang SEBENARNYA di disk (menangkap nama pendek 8.3
+            // dan alias lain): file .php tidak pernah dikirim sebagai teks, file tersembunyi
+            // seperti .env tidak pernah dilayani.
+            if hidden_on_disk(&docroot, &target) {
+                return simple(403, "Forbidden", "File tersembunyi tidak dilayani.");
+            }
+            if real_name(&target).map(|n| n.to_ascii_lowercase().ends_with(".php")).unwrap_or(false) {
+                return simple(403, "Forbidden", "File PHP hanya bisa dijalankan dengan nama aslinya.");
+            }
             return static_file(&req, &target).await;
         }
         if target.is_dir() {
@@ -350,6 +385,9 @@ async fn serve_site(
     let Some((file, script_name, path_info)) = script else {
         return simple(404, "Not Found", &format!("<code>{}</code> tidak ada di situs ini.", html_escape(&decoded)));
     };
+    if hidden_on_disk(&docroot, &file) {
+        return simple(403, "Forbidden", "File tersembunyi tidak dilayani.");
+    }
 
     let Some(ver) = cfg.php_for(&st.home, &site.name) else {
         return simple(500, "PHP belum terpasang", "Pasang dulu PHP, misalnya: <code>hl php:install 8.3</code>");
