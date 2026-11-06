@@ -42,11 +42,23 @@ Butuh Rust (MSVC) untuk build. Windows 10/11 sudah menyertakan `curl.exe` dan `t
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File install.ps1     # default: D:\DevTools\herdlite
-D:\DevTools\herdlite\bin\hl.exe path:add                 # tambahkan ke PATH user, lalu buka terminal baru
-hl import-herd                                           # opsional: salin park/link/isolate dari Herd
-hl php:install 8.3                                       # unduh PHP resmi + cek SHA-256
-hl start
+D:\DevTools\herdlite\bin\hl.exe import-herd              # opsional: salin park/link/isolate dari Herd
+D:\DevTools\herdlite\bin\hl.exe setup                    # sisanya otomatis
 ```
+
+`hl setup` mengerjakan semuanya dan melewati langkah yang sudah beres:
+
+1. memasang PHP 8.3, Composer, dan Laravel installer kalau belum ada
+2. memasang Node LTS kalau belum ada
+3. mengatur PATH user
+4. memindahkan server ke port 80/443 kalau port itu kosong, lalu menyalakannya
+5. mempercayakan CA HTTPS (ada dialog Windows, klik Yes)
+6. menulis hosts (ada jendela UAC, klik Yes)
+7. menyalakan autostart dan membuat shortcut **herdlite** di Start Menu
+
+Di akhir, `hl doctor` ditampilkan.
+
+Setelah itu cara pakainya seperti Herd: server menyala sendiri saat login (RAM menganggur ± 1 MB). Kalau dimatikan, buka **herdlite** dari Start Menu; server menyala dan dashboard terbuka.
 
 Folder data (`home`) adalah induk folder `bin` tempat `hl.exe` berada, atau `HERDLITE_HOME`. Isinya: `config.json`, `php\<versi>\`, `node\<versi>\` + `node\current`, `certs\`, `logs\`, `bin\` (php.cmd, php83.cmd, composer.cmd, laravel.cmd).
 
@@ -62,6 +74,7 @@ hl which-php            hl php:list   hl php:available   hl php:install 8.4   hl
 hl composer:install     hl laravel:install     # composer + `laravel new`
 hl node:install 26      hl node:install lts    hl node:use 24   hl node:list   # pengganti nvm Herd
 hl doctor               # cek apa yang masih bergantung pada Herd
+hl setup                hl shortcut [--desktop]
 hl secure [nama|--all]  hl unsecure [nama|--all]   hl trust   hl untrust
 hl hosts                hl hosts sync          # sync: jalankan dari terminal Administrator
 hl config [kunci [nilai]]                      # mis. hl config http_port 8080
@@ -74,9 +87,9 @@ Dashboard (hanya baca) tersedia di `http://herdlite.test`: daftar situs, versi P
 
 | Kebutuhan | Cara herdlite | Catatan |
 |---|---|---|
-| `*.test` ke 127.0.0.1 | hosts file, blok `# herdlite-start … # herdlite-end` | Menulis hosts butuh **Administrator**. herdlite tidak pernah meminta elevasi sendiri; jalankan `hl hosts sync` dari terminal admin setiap ada situs baru. `hl hosts` menunjukkan nama yang belum ada, dan nama yang hanya ada di blok milik Herd dianggap belum ada. |
+| `*.test` ke 127.0.0.1 | hosts file, blok `# herdlite-start … # herdlite-end` | Menulis hosts butuh **Administrator**. `hl hosts sync` meminta izin lewat jendela UAC hanya saat dijalankan; tidak ada service admin yang selalu hidup seperti HerdHelper. Jalankan setiap ada situs baru; dashboard memberi tanda kalau ada nama yang belum masuk. `hl hosts` menunjukkan nama yang belum ada, dan nama yang hanya ada di blok milik Herd dianggap belum ada. |
 | Wildcard tanpa edit hosts | belum dibuat | Alternatifnya DNS mini + aturan NRPT `.test` (sekali admin). Tidak dipilih karena mengubah kebijakan DNS Windows dan bisa dilewati browser yang memakai DoH. |
-| Percaya CA HTTPS | `hl trust` → `certutil -user -addstore Root` | Masuk ke store **CurrentUser** (tanpa admin, ada dialog konfirmasi Windows). Firefox: aktifkan `security.enterprise_roots.enabled`. |
+| Percaya CA HTTPS | `hl trust` → `certutil -user -addstore Root` | Masuk ke store **CurrentUser** (tanpa admin, ada dialog konfirmasi Windows). Firefox: aktifkan `security.enterprise_roots.enabled`. `curl.exe` bawaan Windows mewajibkan cek revocation, jadi pakai `curl --ssl-no-revoke` untuk situs lokal (sama seperti dengan sertifikat Herd). |
 | Port 80/443 | bind `127.0.0.1` | Windows tidak butuh admin untuk port < 1024. **Port tidak bisa dipakai bersamaan dengan Herd**: tutup Herd dulu, atau pakai `hl config http_port 8080` / `https_port 8443`. |
 | Autostart | `HKCU\…\Run` → `herdlited.exe` | Tanpa service, tanpa admin. |
 
@@ -98,16 +111,21 @@ Dashboard (hanya baca) tersedia di `http://herdlite.test`: daftar situs, versi P
 
 ## Pindah dari Herd (lalu hapus Herd)
 
-1. `hl import-herd`, lalu `hl php:install 8.3` (dan versi lain yang dibutuhkan situs).
-2. `hl composer:install`, `hl laravel:install`, `hl node:install 26` (samakan dengan `node -v` yang sekarang).
-3. `hl path:add`, lalu buka terminal baru.
-4. Dari terminal **Administrator**: `hl hosts sync`. Blok hosts milik Herd ikut terhapus saat Herd di-uninstall, jadi herdlite menulis bloknya sendiri.
-5. `hl trust` supaya HTTPS tidak memberi peringatan.
-6. Tutup Herd, lalu `hl config http_port 80`, `hl config https_port 443`, `hl restart`.
-7. `hl doctor` harus menunjukkan ✓ semua. Setelah itu Herd boleh di-uninstall lewat Settings → Apps. Sesudah uninstall, jalankan `hl doctor` lagi. Kalau `C:\Program Files\nodejs`, `%USERPROFILE%\.config\herd\bin`, atau variabel `NVM_HOME`/`NVM_SYMLINK` milik Herd masih tertinggal, hapus lewat "Edit the system environment variables" (bagian sistem butuh admin).
-8. Opsional: `hl autostart on`.
+1. `hl import-herd`. Kalau situs butuh versi lain selain 8.3, pasang juga: `hl php:install 8.4`.
+2. Samakan Node dengan yang dipakai sekarang (`node -v`), mis. `hl node:install 26`.
+3. **Tutup Herd** (Quit dari tray) supaya port 80/443 kosong.
+4. `hl setup`, lalu buka terminal baru. `hl doctor` harus ✓ semua.
+5. Sebelum uninstall, cabut symlink situs di `%USERPROFILE%\.config\herd\config\valet\Sites` dan junction `%USERPROFILE%\.config\herd\bin`. Cukup link-nya saja, misalnya `[IO.Directory]::Delete(path, $false)`. Dengan begitu uninstaller tidak bisa menyentuh folder proyek atau data yang ditunjuk link itu.
+6. Uninstall Herd lewat Settings → Apps.
+7. Sisa yang biasanya tertinggal (diamati pada Herd 2.0.3):
+   - folder `%USERPROFILE%\.config\herd`, `%APPDATA%\Herd`, dan data `bin` Herd
+   - di PATH sistem: `…\.config\herd\bin\nvm` dan `C:\Program Files\nodejs` (symlink ke nvm Herd)
+   - variabel `NVM_HOME` dan `NVM_SYMLINK`
+   - blok `# Herd generated Hosts` di hosts file
 
-Paket npm global yang terpasang di Node milik Herd **tidak** ikut pindah. Pasang ulang dengan `npm i -g …` setelah langkah 3.
+   Semuanya aman dihapus setelah `hl doctor` ✓. Bagian PATH sistem, variabel, dan hosts butuh admin.
+
+Paket npm global yang terpasang di Node milik Herd **tidak** ikut pindah. Pasang ulang dengan `npm i -g …` setelah langkah 4.
 
 ## Konfigurasi (`config.json`)
 
