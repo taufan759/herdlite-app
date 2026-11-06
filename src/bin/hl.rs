@@ -15,7 +15,7 @@ const HELP: &str = r#"herdlite — pengganti Laravel Herd yang ringan
 Paling mudah:
   hl setup                      siapkan semuanya sekaligus (PHP, Composer, Node, PATH, port,
                                 HTTPS, hosts lewat UAC, autostart, shortcut), lalu tampilkan hl doctor
-        [--sites=<folder>] [--php=latest|8.4] [--no-node] [--no-laravel]
+        [--sites=<folder>] [--php=latest|8.4] [--no-node] [--no-laravel] [--desktop]
   hl app                        buka dashboard sebagai jendela aplikasi
   hl uninstall [--yes]          bersihkan autostart, shortcut, PATH, CA, dan hosts (folder proyek aman)
 
@@ -955,6 +955,8 @@ struct SetupOpts {
     laravel: bool,
     /// Dipanggil dari installer: buka dashboard di akhir, tahan jendela kalau ada error.
     installer: bool,
+    /// Buat juga shortcut di Desktop.
+    desktop: bool,
 }
 
 impl SetupOpts {
@@ -966,6 +968,7 @@ impl SetupOpts {
             node: !flag(rest, "--no-node"),
             laravel: !flag(rest, "--no-laravel"),
             installer: flag(rest, "--installer"),
+            desktop: flag(rest, "--desktop"),
         }
     }
 }
@@ -1155,7 +1158,7 @@ fn setup(home: &Path, o: &SetupOpts) -> Result<(), String> {
 
     println!("\n[9/9] Autostart, shortcut, izin folder");
     step("autostart", autostart(true));
-    step("shortcut", shortcut(home, o.installer));
+    step("shortcut", shortcut(home, o.desktop));
     step("izin folder", lock_permissions(home));
 
     println!();
