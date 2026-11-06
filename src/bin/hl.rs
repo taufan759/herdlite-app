@@ -178,8 +178,11 @@ fn run(args: Vec<String>) -> Result<i32, String> {
             let name = norm(&pos.first().cloned().unwrap_or_else(|| {
                 dir.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default()
             }));
-            if name.is_empty() {
-                return Err("nama situs kosong".into());
+            if name.is_empty()
+                || name.starts_with('-')
+                || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+            {
+                return Err(format!("nama situs '{name}' tidak valid (pakai huruf, angka, '-' atau '.')"));
             }
             cfg.links.insert(name.clone(), clean_abs(&dir));
             if flag(&rest, "--secure") && !cfg.secured.contains(&name) {

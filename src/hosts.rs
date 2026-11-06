@@ -9,11 +9,37 @@ pub const HOSTS: &str = r"C:\Windows\System32\drivers\etc\hosts";
 const START: &str = "# herdlite-start (dikelola oleh herdlite: hl hosts sync)";
 const END: &str = "# herdlite-end";
 
+/// TLD yang boleh ditulis ke hosts (sama seperti batasan HerdHelper milik Herd).
+/// Mencegah config.json yang diubah orang lain membelokkan domain sungguhan.
+pub const ALLOWED_TLDS: &[&str] = &["test", "localhost", "local", "wip"];
+
+fn safe_label(n: &str) -> bool {
+    !n.is_empty()
+        && n.len() <= 63
+        && !n.starts_with('-')
+        && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_')
+}
+
+/// Periksa bahwa konfigurasi aman untuk ditulis ke hosts.
+pub fn check_safe(cfg: &Config) -> Result<(), String> {
+    if !ALLOWED_TLDS.contains(&cfg.tld.as_str()) {
+        return Err(format!("tld '{}' tidak diizinkan untuk hosts (pilihan: {})", cfg.tld, ALLOWED_TLDS.join(", ")));
+    }
+    let ip: std::net::Ipv4Addr = loopback(cfg).parse().map_err(|_| format!("bind '{}' bukan alamat IPv4", cfg.bind))?;
+    if !ip.is_loopback() {
+        return Err(format!("bind '{}' bukan alamat loopback 127.x.x.x", cfg.bind));
+    }
+    Ok(())
+}
+
 /// Semua nama host yang dibutuhkan (situs + alias underscore + dashboard).
 pub fn wanted(cfg: &Config) -> Vec<String> {
     let mut set = BTreeSet::new();
     set.insert(format!("herdlite.{}", cfg.tld));
     for s in cfg.sites() {
+        if !safe_label(&s.name) {
+            continue;
+        }
         set.insert(cfg.host(&s.name));
         let raw = s.folder.to_lowercase();
         if !raw.is_empty() && raw != s.name && raw.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
@@ -99,13 +125,22 @@ pub fn render(current: &str, cfg: &Config) -> String {
 
 /// Tulis blok herdlite ke hosts. Gagal dengan pesan jelas kalau tidak dijalankan sebagai Administrator.
 pub fn sync(cfg: &Config) -> Result<usize, String> {
+    check_safe(cfg)?;
     let text = fs::read_to_string(HOSTS).map_err(|e| format!("gagal membaca hosts: {e}"))?;
     let new = render(&text, cfg);
     if new == text {
         return Ok(wanted(cfg).len());
     }
-    let backup = std::env::temp_dir().join("hosts.herdlite-backup");
-    let _ = fs::write(&backup, &text);
+    // Backup dengan nama acak + create_new: proses ini berjalan sebagai admin, jadi jangan
+    // menulis ke nama tetap yang bisa disiapkan lebih dulu sebagai symlink oleh proses lain.
+    let mut rnd = [0u8; 8];
+    let _ = ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut rnd);
+    let tag: String = rnd.iter().map(|b| format!("{b:02x}")).collect();
+    let backup = std::env::temp_dir().join(format!("hosts.herdlite-{tag}.bak"));
+    if let Ok(mut f) = fs::OpenOptions::new().write(true).create_new(true).open(&backup) {
+        use std::io::Write;
+        let _ = f.write_all(text.as_bytes());
+    }
     fs::write(HOSTS, new).map_err(|e| {
         if e.kind() == std::io::ErrorKind::PermissionDenied {
             "butuh hak Administrator. Buka terminal \"Run as administrator\" lalu jalankan lagi: hl hosts sync".to_string()
@@ -128,6 +163,21 @@ mod tests {
         assert!(!out.contains("old.test"));
         assert!(out.contains("127.0.0.1 herdlite.test"));
         assert_eq!(out.matches("herdlite-start").count(), 1);
+    }
+
+    #[test]
+    fn unsafe_config_rejected() {
+        let mut cfg = Config::default();
+        assert!(check_safe(&cfg).is_ok());
+        cfg.tld = "com".into();
+        assert!(check_safe(&cfg).is_err());
+        cfg.tld = "test".into();
+        cfg.bind = "10.0.0.5".into();
+        assert!(check_safe(&cfg).is_err());
+        cfg.bind = "0.0.0.0".into(); // ditulis sebagai 127.0.0.1
+        assert!(check_safe(&cfg).is_ok());
+        assert!(!safe_label("foo bar"));
+        assert!(!safe_label("a\nb"));
     }
 
     #[test]
