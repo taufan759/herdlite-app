@@ -12,6 +12,10 @@ use std::time::{Duration, Instant};
 
 const HELP: &str = r#"herdlite — pengganti Laravel Herd yang ringan
 
+Paling mudah:
+  hl setup                      siapkan semuanya sekaligus (PHP, Composer, Node, PATH, port 80/443,
+                                HTTPS, hosts lewat UAC, autostart, shortcut), lalu tampilkan hl doctor
+
 Server:
   hl start | stop | restart     nyalakan / matikan server latar belakang
   hl status                     status server dan php-cgi yang sedang jalan
@@ -60,6 +64,7 @@ Lain-lain:
   hl doctor                     cek kesiapan pindah dari Herd (php/composer/node/hosts/port)
   hl path:add                   tambahkan <home>\bin dan Node aktif ke PATH user
   hl autostart on|off           jalankan herdlite otomatis saat login
+  hl shortcut [--desktop]       shortcut "herdlite" di Start Menu: klik = nyala + buka dashboard
   hl home                       tampilkan folder data herdlite
 "#;
 
@@ -443,6 +448,8 @@ fn run(args: Vec<String>) -> Result<i32, String> {
             Some("off") => autostart(false)?,
             _ => return Err("pakai: hl autostart on|off".into()),
         },
+        "shortcut" => shortcut(&home, flag(&rest, "--desktop"))?,
+        "setup" => setup(&home)?,
         other => return Err(format!("perintah tidak dikenal: {other}  (lihat: hl help)")),
     }
     Ok(0)
@@ -782,5 +789,119 @@ fn autostart(on: bool) -> Result<(), String> {
         let _ = run_quiet("reg", &["delete", key, "/v", "herdlite", "/f"]);
         println!("✓ autostart dimatikan");
     }
+    Ok(())
+}
+
+/// Shortcut "herdlite" di Start Menu (dan opsional Desktop): klik = nyalakan server + buka dashboard.
+fn shortcut(home: &Path, desktop: bool) -> Result<(), String> {
+    let exe = daemon_exe()?;
+    let mut folders = vec!["Programs"];
+    if desktop {
+        folders.push("Desktop");
+    }
+    for f in folders {
+        let ps = format!(
+            "$l=Join-Path ([Environment]::GetFolderPath('{f}')) 'herdlite.lnk'; $s=(New-Object -ComObject WScript.Shell).CreateShortcut($l); \
+             $s.TargetPath='{exe}'; $s.Arguments='--open'; $s.WorkingDirectory='{home}'; \
+             $s.Description='herdlite: server PHP lokal (situs .test)'; $s.Save(); $l",
+            exe = exe.display().to_string().replace('\'', "''"),
+            home = home.display().to_string().replace('\'', "''"),
+        );
+        let out = Command::new("powershell").args(["-NoProfile", "-Command", &ps]).output().map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(format!("gagal membuat shortcut: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        }
+        println!("✓ Shortcut: {}", String::from_utf8_lossy(&out.stdout).trim());
+    }
+    Ok(())
+}
+
+fn step(name: &str, r: Result<(), String>) {
+    if let Err(e) = r {
+        println!("✗ {name}: {e}");
+    }
+}
+
+/// Satu perintah untuk menyiapkan semuanya. Langkah yang sudah beres dilewati.
+fn setup(home: &Path) -> Result<(), String> {
+    println!("── herdlite setup ({}) ──", home.display());
+    let mut cfg = Config::load(home)?;
+
+    println!("\n[1/8] PHP, Composer, Laravel installer");
+    if cfg.installed_php(home).is_empty() {
+        step("PHP", phpinstall::install(home, "8.3", false).map(|v| println!("✓ PHP {v} terpasang")));
+        cfg = Config::load(home)?;
+        if cfg.default_php.is_empty() {
+            cfg.default_php = "8.3".into();
+            cfg.save(home)?;
+        }
+    } else {
+        println!("✓ PHP {}", cfg.installed_php(home).join(", "));
+    }
+    if !home.join("bin").join("composer.phar").is_file() {
+        step("Composer", phpinstall::install_composer(home).map(|_| println!("✓ Composer terpasang")));
+    } else {
+        println!("✓ Composer");
+    }
+    if phpinstall::laravel_bat().is_none() {
+        step("Laravel installer", phpinstall::install_laravel(home, &cfg).map(|_| println!("✓ Laravel installer terpasang")));
+    } else {
+        println!("✓ Laravel installer");
+    }
+    step("shim", phpinstall::write_shims(home, &cfg));
+
+    println!("\n[2/8] Node.js");
+    match node::active(home) {
+        Some(v) => println!("✓ Node {v}"),
+        None => step(
+            "Node",
+            node::install(home, "lts")
+                .and_then(|v| node::use_version(home, &v))
+                .map(|v| println!("✓ Node {v} terpasang dan aktif")),
+        ),
+    }
+
+    println!("\n[3/8] PATH user");
+    step("PATH", path_add(home));
+
+    println!("\n[4/8] Port 80/443");
+    if cfg.http_port != 80 || cfg.https_port != 443 {
+        stop(home, false);
+        let free80 = port_free(&cfg.bind, 80).is_ok();
+        let free443 = port_free(&cfg.bind, 443).is_ok();
+        if free80 && free443 {
+            cfg.http_port = 80;
+            cfg.https_port = 443;
+            cfg.save(home)?;
+            println!("✓ herdlite memakai port 80 dan 443");
+        } else {
+            let who = win::port_owner(if free80 { 443 } else { 80 }).unwrap_or_else(|| "proses lain".into());
+            println!(
+                "✗ port 80/443 masih dipakai {who}. Tutup dulu (mis. Herd), lalu jalankan hl setup lagi. Sementara tetap di {}/{}.",
+                cfg.http_port, cfg.https_port
+            );
+        }
+    } else {
+        println!("✓ port 80 dan 443");
+    }
+
+    println!("\n[5/8] Server");
+    step("start", start(home, &cfg));
+
+    println!("\n[6/8] HTTPS (CA lokal)");
+    step("trust", trust_ca(home, &cfg));
+
+    println!("\n[7/8] hosts file");
+    match hosts::missing(&cfg) {
+        Ok(m) if m.is_empty() => println!("✓ semua nama .{} sudah ada", cfg.tld),
+        _ => step("hosts", hosts_sync(&cfg, false)),
+    }
+
+    println!("\n[8/8] Autostart dan shortcut Start Menu");
+    step("autostart", autostart(true));
+    step("shortcut", shortcut(home, false));
+
+    println!();
+    doctor(home, &cfg);
     Ok(())
 }
