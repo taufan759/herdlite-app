@@ -13,8 +13,9 @@ use std::time::{Duration, Instant};
 const HELP: &str = r#"herdlite — pengganti Laravel Herd yang ringan
 
 Paling mudah:
-  hl setup                      siapkan semuanya sekaligus (PHP, Composer, Node, PATH, port 80/443,
+  hl setup                      siapkan semuanya sekaligus (PHP, Composer, Node, PATH, port,
                                 HTTPS, hosts lewat UAC, autostart, shortcut), lalu tampilkan hl doctor
+        [--sites=<folder>] [--php=latest|8.4] [--no-node] [--no-laravel]
   hl app                        buka dashboard sebagai jendela aplikasi
   hl uninstall [--yes]          bersihkan autostart, shortcut, PATH, CA, dan hosts (folder proyek aman)
 
@@ -478,7 +479,7 @@ fn run(args: Vec<String>) -> Result<i32, String> {
             _ => return Err("pakai: hl autostart on|off".into()),
         },
         "shortcut" => shortcut(&home, flag(&rest, "--desktop"))?,
-        "setup" => setup(&home)?,
+        "setup" => setup(&home, &SetupOpts::parse(&rest))?,
         "uninstall" => uninstall(&home, flag(&rest, "--yes"))?,
         "app" | "dashboard" => {
             let url = server::dashboard_url(&cfg);
@@ -944,94 +945,242 @@ fn shortcut(home: &Path, desktop: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn step(name: &str, r: Result<(), String>) {
-    if let Err(e) = r {
-        println!("✗ {name}: {e}");
+/// Pilihan untuk `hl setup` (juga dipakai installer).
+struct SetupOpts {
+    /// Folder proyek yang di-park (dibuat kalau belum ada) + contoh situs "halo".
+    sites: Option<PathBuf>,
+    /// "latest" atau versi seperti "8.4". Kosong = pakai yang sudah ada / 8.3.
+    php: String,
+    node: bool,
+    laravel: bool,
+    /// Dipanggil dari installer: buka dashboard di akhir, tahan jendela kalau ada error.
+    installer: bool,
+}
+
+impl SetupOpts {
+    fn parse(rest: &[String]) -> SetupOpts {
+        let sites = opt(rest, "--sites").filter(|s| !s.trim().is_empty()).map(|s| PathBuf::from(s.trim().trim_matches('"')));
+        SetupOpts {
+            sites,
+            php: opt(rest, "--php").unwrap_or_default(),
+            node: !flag(rest, "--no-node"),
+            laravel: !flag(rest, "--no-laravel"),
+            installer: flag(rest, "--installer"),
+        }
     }
 }
 
+/// Port pertama yang bebas dari daftar.
+fn first_free(bind: &str, candidates: &[u16]) -> Option<u16> {
+    candidates.iter().copied().find(|p| port_free(bind, *p).is_ok())
+}
+
+const SAMPLE_INDEX: &str = r#"<?php $file = __FILE__; ?>
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Halo dari herdlite</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fafaf9; --fg:#1c1917; --dim:#78716c; --line:#e7e5e4; --acc:#dc2626; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#1c1917; --fg:#f5f5f4; --dim:#a8a29e; --line:#44403c; --acc:#f87171; } }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.6 system-ui, "Segoe UI", sans-serif; }
+  main { max-width:720px; margin:0 auto; padding:40px 16px; }
+  h1 { font-size:28px; margin:0 0 8px; }
+  code { background:var(--line); padding:2px 6px; border-radius:4px; font-size:14px; word-break:break-all; }
+  li { margin:6px 0; } a { color:var(--acc); }
+  .dim { color:var(--dim); }
+</style>
+</head>
+<body>
+<main>
+  <h1>🎉 Halo! PHP <?= PHP_VERSION ?> sudah jalan.</h1>
+  <p class="dim">Situs ini dilayani oleh herdlite, pengganti ringan XAMPP/Laragon/Herd.</p>
+  <h2>Langkah berikutnya</h2>
+  <ol>
+    <li>Ubah file ini: <code><?= htmlspecialchars($file) ?></code>, lalu refresh halaman.</li>
+    <li>Buat folder baru di <code><?= htmlspecialchars(dirname(__DIR__)) ?></code>, misalnya <code>belajar</code>.
+        Folder itu langsung bisa dibuka di <code>http://belajar.test</code>
+        (situs baru perlu didaftarkan sekali lewat dashboard, klik tombol yang muncul).</li>
+    <li>Proyek Laravel: buka terminal di folder itu lalu jalankan <code>laravel new toko</code> → buka <code>http://toko.test</code>.</li>
+    <li>Butuh database? Pasang MySQL/MariaDB (mis. DBngin) lalu sambungkan ke <code>127.0.0.1:3306</code>.</li>
+  </ol>
+  <p><a href="info.php">Lihat phpinfo()</a> · <a href="http://herdlite.<?= htmlspecialchars(preg_replace('/^[^.]+\./', '', $_SERVER['HTTP_HOST'] ?? 'halo.test')) ?>">Dashboard herdlite</a></p>
+</main>
+</body>
+</html>
+"#;
+
+/// Buat folder proyek + contoh situs "halo" (kalau folder masih kosong), lalu park.
+fn prepare_sites(home: &Path, dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("gagal membuat {}: {e}", dir.display()))?;
+    let empty = std::fs::read_dir(dir).map(|mut r| r.next().is_none()).unwrap_or(true);
+    if empty {
+        let halo = dir.join("halo");
+        std::fs::create_dir_all(&halo).map_err(|e| e.to_string())?;
+        std::fs::write(halo.join("index.php"), SAMPLE_INDEX).map_err(|e| e.to_string())?;
+        std::fs::write(halo.join("info.php"), "<?php phpinfo();\n").map_err(|e| e.to_string())?;
+        println!("✓ Contoh situs dibuat: {}", halo.display());
+    }
+    let mut cfg = Config::load(home)?;
+    let d = clean_abs(dir);
+    if !cfg.paths.iter().any(|p| util::path_key(Path::new(p)) == util::path_key(Path::new(&d))) {
+        cfg.paths.insert(0, d.clone());
+        cfg.save(home)?;
+    }
+    println!("✓ Folder proyek: {d} (setiap subfolder = <nama>.{})", cfg.tld);
+    Ok(())
+}
+
 /// Satu perintah untuk menyiapkan semuanya. Langkah yang sudah beres dilewati.
-fn setup(home: &Path) -> Result<(), String> {
+fn setup(home: &Path, o: &SetupOpts) -> Result<(), String> {
     println!("── herdlite setup ({}) ──", home.display());
+    let mut failed = 0usize;
+    let mut step = |name: &str, r: Result<(), String>| {
+        if let Err(e) = r {
+            failed += 1;
+            println!("✗ {name}: {e}");
+        }
+    };
     let mut cfg = Config::load(home)?;
 
-    println!("\n[1/8] PHP, Composer, Laravel installer");
-    if cfg.installed_php(home).is_empty() {
-        step("PHP", phpinstall::install(home, "8.3", false).map(|v| println!("✓ PHP {v} terpasang")));
+    println!("\n[1/9] PHP");
+    let want = if o.php == "latest" {
+        match phpinstall::available() {
+            Ok(list) => list.last().and_then(|r| parse_ver(&r.version)),
+            Err(e) => {
+                println!("! daftar versi PHP tidak bisa diambil ({e}), memakai 8.4");
+                Some("8.4".into())
+            }
+        }
+    } else if o.php.is_empty() {
+        if cfg.installed_php(home).is_empty() { Some("8.3".into()) } else { None }
+    } else {
+        parse_ver(&o.php)
+    };
+    if let Some(v) = want {
+        if cfg.installed_php(home).contains(&v) {
+            println!("✓ PHP {v} sudah terpasang");
+        } else {
+            step("PHP", phpinstall::install(home, &v, false).map(|full| println!("✓ PHP {full} terpasang")));
+        }
         cfg = Config::load(home)?;
-        if cfg.default_php.is_empty() {
-            cfg.default_php = "8.3".into();
+        if cfg.default_php.is_empty() && cfg.installed_php(home).contains(&v) {
+            cfg.default_php = v;
             cfg.save(home)?;
         }
-    } else {
-        println!("✓ PHP {}", cfg.installed_php(home).join(", "));
     }
+    println!("  PHP terpasang: {}", cfg.installed_php(home).join(", "));
+
+    println!("\n[2/9] Composer{}", if o.laravel { " dan Laravel installer" } else { "" });
     if !home.join("bin").join("composer.phar").is_file() {
         step("Composer", phpinstall::install_composer(home).map(|_| println!("✓ Composer terpasang")));
     } else {
         println!("✓ Composer");
     }
-    if phpinstall::laravel_bat().is_none() {
-        step("Laravel installer", phpinstall::install_laravel(home, &cfg).map(|_| println!("✓ Laravel installer terpasang")));
-    } else {
-        println!("✓ Laravel installer");
+    if o.laravel {
+        if phpinstall::laravel_bat().is_none() {
+            step("Laravel installer", phpinstall::install_laravel(home, &cfg).map(|_| println!("✓ Laravel installer terpasang")));
+        } else {
+            println!("✓ Laravel installer");
+        }
     }
     step("shim", phpinstall::write_shims(home, &cfg));
 
-    println!("\n[2/8] Node.js");
+    println!("\n[3/9] Node.js");
     match node::active(home) {
         Some(v) => println!("✓ Node {v}"),
-        None => step(
+        None if o.node => step(
             "Node",
             node::install(home, "lts")
                 .and_then(|v| node::use_version(home, &v))
                 .map(|v| println!("✓ Node {v} terpasang dan aktif")),
         ),
+        None => println!("- dilewati (pasang nanti: hl node:install lts)"),
     }
 
-    println!("\n[3/8] PATH user");
+    println!("\n[4/9] Folder proyek");
+    match &o.sites {
+        Some(d) => step("folder proyek", prepare_sites(home, d)),
+        None if cfg.paths.is_empty() => {
+            let d = PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into())).join("Sites");
+            step("folder proyek", prepare_sites(home, &d));
+        }
+        None => println!("✓ {}", cfg.paths.join(" · ")),
+    }
+    cfg = Config::load(home)?;
+
+    println!("\n[5/9] PATH user");
     step("PATH", path_add(home));
 
-    println!("\n[4/8] Port 80/443");
-    if cfg.http_port != 80 || cfg.https_port != 443 {
-        stop(home, false);
-        let free80 = port_free(&cfg.bind, 80).is_ok();
-        let free443 = port_free(&cfg.bind, 443).is_ok();
-        if free80 && free443 {
-            cfg.http_port = 80;
-            cfg.https_port = 443;
-            cfg.save(home)?;
-            println!("✓ herdlite memakai port 80 dan 443");
-        } else {
-            let who = win::port_owner(if free80 { 443 } else { 80 }).unwrap_or_else(|| "proses lain".into());
-            println!(
-                "✗ port 80/443 masih dipakai {who}. Tutup dulu (mis. Herd), lalu jalankan hl setup lagi. Sementara tetap di {}/{}.",
-                cfg.http_port, cfg.https_port
-            );
+    println!("\n[6/9] Port");
+    let running = running_pid(home).is_some();
+    let on_default = cfg.http_port == 80 && (cfg.https_port == 443 || cfg.https_port == 0);
+    if !(running && on_default) {
+        if running {
+            stop(home, false);
         }
-    } else {
-        println!("✓ port 80 dan 443");
+        // Pakai 80/443 kalau bebas; kalau dipakai (XAMPP, Laragon, IIS, Skype…) pilih port lain.
+        let http = first_free(&cfg.bind, &[80, 8080, 8000, 8888, 8081]);
+        let https = first_free(&cfg.bind, &[443, 8443, 4443, 9443]);
+        match http {
+            Some(p) => {
+                if p != 80 {
+                    let who = win::port_owner(80).unwrap_or_else(|| "program lain".into());
+                    println!("! port 80 dipakai {who}, herdlite memakai port {p}");
+                }
+                cfg.http_port = p;
+            }
+            None => println!("✗ tidak ada port HTTP yang bebas (80, 8080, 8000, 8888, 8081)"),
+        }
+        if cfg.https_port != 0 {
+            if let Some(p) = https {
+                cfg.https_port = p;
+            }
+        }
+        cfg.save(home)?;
     }
+    println!("✓ HTTP port {}, HTTPS port {}", cfg.http_port, cfg.https_port);
 
-    println!("\n[5/8] Server");
+    println!("\n[7/9] Server");
     step("start", start(home, &cfg));
 
-    println!("\n[6/8] HTTPS (CA lokal)");
+    println!("\n[8/9] HTTPS dan nama .{}", cfg.tld);
     step("trust", trust_ca(home, &cfg));
-
-    println!("\n[7/8] hosts file");
     match hosts::missing(&cfg) {
-        Ok(m) if m.is_empty() => println!("✓ semua nama .{} sudah ada", cfg.tld),
+        Ok(m) if m.is_empty() => println!("✓ semua nama .{} sudah terdaftar", cfg.tld),
         _ => step("hosts", hosts_write(&cfg, HostsMode::Sync, false)),
     }
 
-    println!("\n[8/8] Autostart dan shortcut Start Menu");
+    println!("\n[9/9] Autostart, shortcut, izin folder");
     step("autostart", autostart(true));
-    step("shortcut", shortcut(home, false));
+    step("shortcut", shortcut(home, o.installer));
     step("izin folder", lock_permissions(home));
 
     println!();
     doctor(home, &cfg);
+
+    let dash = server::dashboard_url(&cfg);
+    println!();
+    if failed == 0 {
+        println!("✓ Selesai! Dashboard: {dash}");
+        if cfg.sites().iter().any(|s| s.name == "halo") {
+            println!("  Contoh situs: {}", cfg.url("halo"));
+        }
+    } else {
+        println!("! Selesai dengan {failed} langkah gagal (lihat tanda ✗ di atas). Jalankan 'hl setup' lagi untuk mencoba ulang.");
+    }
+    if o.installer {
+        server::open_app(&dash);
+        if failed > 0 {
+            println!("\nTekan Enter untuk menutup jendela ini…");
+            let mut s = String::new();
+            let _ = std::io::stdin().read_line(&mut s);
+        } else {
+            std::thread::sleep(Duration::from_secs(4));
+        }
+    }
     Ok(())
 }
 
